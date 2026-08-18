@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# nix-scout — scan modules/, materialize to /tmp, build .#scout, apply output.
+set -euo pipefail
+
+# @-delimited values are replaced by the NixOS module at build time via substituteInPlace.
+# If unreplaced (standalone/source run), they fall through to env var / self-relative.
+_SCOUT_ROOT_BAKED="@scoutRoot@"
+_SCOUT_MODULES_BAKED="@scoutModules@"
+_SCOUT_PARENT_BAKED="@scoutParent@"
+
+NIX_SCOUT_PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${USER}/nix-scout}"
+NIX_SCOUT_GCROOTS="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${USER}/nix-scout}"
+
+_scout_lib() {
+  local name="$1"
+  local bin_lib
+  bin_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/$name"
+  if [[ -f "$bin_lib" ]]; then
+    printf '%s' "$bin_lib"
+    return 0
+  fi
+  return 1
+}
+
+_resolve_root() {
+  if [[ "${_SCOUT_ROOT_BAKED}" != "@"* ]]; then
+    printf '%s' "${_SCOUT_ROOT_BAKED}"
+    return 0
+  fi
+  if [[ -n "${NIX_SCOUT_ROOT:-}" ]]; then
+    printf '%s' "$NIX_SCOUT_ROOT"
+    return 0
+  fi
+  local dir
+  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  printf '%s' "$dir"
+}
+
+_resolve_modules() {
+  if [[ "${_SCOUT_MODULES_BAKED}" != "@"* ]]; then
+    printf '%s' "${_SCOUT_MODULES_BAKED}"
+    return 0
+  fi
+  if [[ -n "${NIX_SCOUT_MODULES:-}" ]]; then
+    printf '%s' "$NIX_SCOUT_MODULES"
+    return 0
+  fi
+  printf '%s/modules' "$(_resolve_root)"
+}
+
+_resolve_parent() {
+  if [[ "${_SCOUT_PARENT_BAKED}" != "@"* ]]; then
+    printf '%s' "${_SCOUT_PARENT_BAKED}"
+    return 0
+  fi
+  if [[ -n "${NIX_SCOUT_PARENT:-}" ]]; then
+    printf '%s' "$NIX_SCOUT_PARENT"
+    return 0
+  fi
+  local root parent
+  root="$(_resolve_root)"
+  parent="$(cd "$root/.." && pwd)"
+  while [[ "$parent" != "/" ]]; do
+    if [[ -f "$parent/flake.nix" && -f "$parent/flake.lock" ]]; then
+      printf '%s' "$parent"
+      return 0
+    fi
+    parent="$(dirname "$parent")"
+  done
+  printf '%s' "$(pwd)"
+}
+
+_require_user() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    echo "nix-scout: run as your user, not root (profile and home paths depend on \$USER)" >&2
+    exit 1
+  fi
+}
+
+# Returns true if the current user can write to path (walks up to first existing ancestor).
+_can_write() {
+  local check="$1"
+  while [[ "$check" != "/" && ! -e "$check" ]]; do
+    check="$(dirname "$check")"
+  done
+  [[ -w "$check" ]]
+}
+
+_priv_mkdir() {
+  local dir="$1"
+  if _can_write "$dir"; then
+    mkdir -p "$dir"
+  else
+    echo "nix-scout: need elevated permissions to create $dir" >&2
+    sudo mkdir -p "$dir"
+  fi
+}
+
+_priv_ln_sfn() {
+  local target="$1" link="$2"
+  if [[ -w "$(dirname "$link")" ]]; then
+    ln -sfn "$target" "$link"
+  else
+    echo "nix-scout: need elevated permissions to link $link" >&2
+    sudo ln -sfn "$target" "$link"
+  fi
+}
+
+_priv_nix_env() {
+  local profile="$1" store="$2"
+  if _can_write "$profile"; then
+    nix-env -p "$profile" -i "$store"
+  else
+    echo "nix-scout: need elevated permissions for nix-env profile $profile" >&2
+    sudo nix-env -p "$profile" -i "$store"
+  fi
+}
+
+usage() {
+  cat <<EOF
+nix-scout — scout module switcher
+
+Usage:
+  nix-scout list              List scout modules under \$NIX_SCOUT_MODULES
+  nix-scout switch <name>     Materialize, build, and apply a scout module
+  nix-scout switch <path>     Install a store path or flake installable into profile
+  nix-scout status            Show active scout profile + gc-roots
+  nix-scout clear             Clear scout profile and gc-roots
+
+Environment:
+  NIX_SCOUT_ROOT      $(_resolve_root)
+  NIX_SCOUT_MODULES   $(_resolve_modules)
+  NIX_SCOUT_PARENT    $(_resolve_parent)
+  NIX_SCOUT_PROFILE   $NIX_SCOUT_PROFILE
+  NIX_SCOUT_GCROOTS   $NIX_SCOUT_GCROOTS
+
+Scout modules are subflakes under modules/<name>/flake.nix. Each exports .#scout.
+
+module-mode: scout modules cannot set system-wide NixOS options (use nfb / core config).
+EOF
+}
+
+cmd_list() {
+  local modules dir
+  modules="$(_resolve_modules)"
+  if [[ ! -d "$modules" ]]; then
+    echo "nix-scout: modules directory missing: $modules" >&2
+    exit 1
+  fi
+  for dir in "$modules"/*; do
+    [[ -d "$dir" && -f "$dir/flake.nix" ]] || continue
+    basename "$dir"
+  done | sort
+}
+
+_switch_module() {
+  local name="$1"
+  local modules mod_dir mat mat_script apply_script store_path
+
+  modules="$(_resolve_modules)"
+  mod_dir="$modules/$name"
+  if [[ ! -f "$mod_dir/flake.nix" ]]; then
+    echo "nix-scout: module not found: $name (expected $mod_dir/flake.nix)" >&2
+    exit 1
+  fi
+
+  mat_script="$(_scout_lib materialize-module.sh)"
+  apply_script="$(_scout_lib apply-output.sh)"
+
+  echo "nix-scout: materialize $name from $mod_dir" >&2
+  mat="$(env NIX_SCOUT_PARENT="$(_resolve_parent)" bash "$mat_script" "$mod_dir")"
+  mat="${mat%%$'\n'*}"
+
+  echo "nix-scout: build $mat#scout" >&2
+  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file "$mat#scout")"
+  store_path="${store_path%%$'\n'*}"
+
+  env NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
+    NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
+    bash "$apply_script" "$store_path" "$name"
+}
+
+_switch_path() {
+  local arg="$1"
+  _priv_mkdir "$(dirname "$NIX_SCOUT_PROFILE")"
+  _priv_nix_env "$NIX_SCOUT_PROFILE" "$arg"
+  _priv_mkdir "$NIX_SCOUT_GCROOTS"
+  _priv_ln_sfn "$arg" "$NIX_SCOUT_GCROOTS/program"
+  echo "nix-scout: installed $arg into scout profile"
+}
+
+cmd_switch() {
+  local arg="${1:-}"
+  if [[ -z "$arg" ]]; then
+    echo "nix-scout switch: missing argument" >&2
+    usage >&2
+    exit 1
+  fi
+
+  if [[ "$arg" == *"#"* ]] || [[ "$arg" == /nix/store/* ]] || [[ -d "$arg" && -d "$arg/bin" ]]; then
+    _switch_path "$arg"
+    return
+  fi
+
+  local modules="$(_resolve_modules)"
+  if [[ -f "$modules/$arg/flake.nix" ]]; then
+    _switch_module "$arg"
+    return
+  fi
+
+  echo "nix-scout: module not found: $arg" >&2
+  exit 1
+}
+
+cmd_status() {
+  echo "=== nix-scout status ==="
+  echo "Profile: $NIX_SCOUT_PROFILE"
+  echo "Modules: $(_resolve_modules)"
+
+  if [[ -e "$NIX_SCOUT_PROFILE" ]]; then
+    echo "Programs:"
+    nix-env -p "$NIX_SCOUT_PROFILE" -q 2>/dev/null || true
+  fi
+
+  echo "GC-roots:"
+  if [[ -d "$NIX_SCOUT_GCROOTS" ]]; then
+    local found=0 name target
+    while IFS= read -r -d '' target; do
+      name="$(basename "$target")"
+      echo "  $name"
+      found=1
+    done < <(find "$NIX_SCOUT_GCROOTS" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
+    [[ "$found" -eq 1 ]] || echo "  (none)"
+  else
+    echo "  (none)"
+  fi
+}
+
+cmd_clear() {
+  if [[ -e "$NIX_SCOUT_PROFILE" ]]; then
+    nix-env -p "$NIX_SCOUT_PROFILE" --uninstall '.*' 2>/dev/null || true
+    rm -f "$NIX_SCOUT_PROFILE" "${NIX_SCOUT_PROFILE}-"* 2>/dev/null || true
+  fi
+  if [[ -d "$NIX_SCOUT_GCROOTS" ]]; then
+    find "$NIX_SCOUT_GCROOTS" -mindepth 1 -delete 2>/dev/null || true
+  fi
+  FISH_CONF="${XDG_CONFIG_HOME:-${HOME:-~}/.config}/fish/conf.d/nix-scout.fish"
+  if [[ -f "$FISH_CONF" ]]; then
+    rm -f "$FISH_CONF"
+    echo "nix-scout: removed $FISH_CONF"
+  fi
+  echo "nix-scout: cleared dedicated profile and gc-roots"
+}
+
+case "${1:-}" in
+  list)
+    _require_user
+    cmd_list
+    ;;
+  switch)
+    _require_user
+    shift
+    cmd_switch "$@"
+    ;;
+  status)
+    _require_user
+    cmd_status
+    ;;
+  clear)
+    _require_user
+    cmd_clear
+    ;;
+  --help|-h|help)
+    usage
+    ;;
+  "")
+    usage >&2
+    exit 1
+    ;;
+  *)
+    echo "nix-scout: unknown subcommand '$1'" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
