@@ -14,6 +14,7 @@ fi
 
 tmp="$(mktemp -d /tmp/nix-scout-XXXXXX)"
 cp -a "$MODULE_DIR/." "$tmp/"
+chmod -R u+w "$tmp"
 
 parent_lock="${NIX_SCOUT_PARENT}/flake.lock"
 if [[ -f "$parent_lock" ]]; then

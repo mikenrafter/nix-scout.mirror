@@ -3,8 +3,7 @@
 set -euo pipefail
 
 # @-delimited values are replaced by the NixOS module at build time via substituteInPlace.
-# If unreplaced (standalone/source run), they fall through to env var / self-relative.
-_SCOUT_ROOT_BAKED="@scoutRoot@"
+# Env vars are the override mechanism for dev runs. Neither has a fallback — be explicit.
 _SCOUT_MODULES_BAKED="@scoutModules@"
 _SCOUT_PARENT_BAKED="@scoutParent@"
 
@@ -22,20 +21,6 @@ _scout_lib() {
   return 1
 }
 
-_resolve_root() {
-  if [[ "${_SCOUT_ROOT_BAKED}" != "@"* ]]; then
-    printf '%s' "${_SCOUT_ROOT_BAKED}"
-    return 0
-  fi
-  if [[ -n "${NIX_SCOUT_ROOT:-}" ]]; then
-    printf '%s' "$NIX_SCOUT_ROOT"
-    return 0
-  fi
-  local dir
-  dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-  printf '%s' "$dir"
-}
-
 _resolve_modules() {
   if [[ "${_SCOUT_MODULES_BAKED}" != "@"* ]]; then
     printf '%s' "${_SCOUT_MODULES_BAKED}"
@@ -45,7 +30,8 @@ _resolve_modules() {
     printf '%s' "$NIX_SCOUT_MODULES"
     return 0
   fi
-  printf '%s/modules' "$(_resolve_root)"
+  echo "nix-scout: NIX_SCOUT_MODULES is not set and no baked value — set it explicitly" >&2
+  exit 1
 }
 
 _resolve_parent() {
@@ -57,17 +43,8 @@ _resolve_parent() {
     printf '%s' "$NIX_SCOUT_PARENT"
     return 0
   fi
-  local root parent
-  root="$(_resolve_root)"
-  parent="$(cd "$root/.." && pwd)"
-  while [[ "$parent" != "/" ]]; do
-    if [[ -f "$parent/flake.nix" && -f "$parent/flake.lock" ]]; then
-      printf '%s' "$parent"
-      return 0
-    fi
-    parent="$(dirname "$parent")"
-  done
-  printf '%s' "$(pwd)"
+  echo "nix-scout: NIX_SCOUT_PARENT is not set and no baked value — set it explicitly" >&2
+  exit 1
 }
 
 _require_user() {
@@ -127,10 +104,9 @@ Usage:
   nix-scout status            Show active scout profile + gc-roots
   nix-scout clear             Clear scout profile and gc-roots
 
-Environment:
-  NIX_SCOUT_ROOT      $(_resolve_root)
-  NIX_SCOUT_MODULES   $(_resolve_modules)
-  NIX_SCOUT_PARENT    $(_resolve_parent)
+Environment (override via env var or baked at build time):
+  NIX_SCOUT_MODULES   ${NIX_SCOUT_MODULES:-${_SCOUT_MODULES_BAKED}}
+  NIX_SCOUT_PARENT    ${NIX_SCOUT_PARENT:-${_SCOUT_PARENT_BAKED}}
   NIX_SCOUT_PROFILE   $NIX_SCOUT_PROFILE
   NIX_SCOUT_GCROOTS   $NIX_SCOUT_GCROOTS
 

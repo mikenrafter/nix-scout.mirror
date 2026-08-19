@@ -15,7 +15,6 @@ let
   scoutProfile = "/nix/var/nix/profiles/per-user/${scoutUser}/nix-scout";
   scoutProfileBin = "${scoutProfile}/bin";
 
-  scoutRoot = cfg.root;
   scoutModules = cfg.modules;
   scoutParent = cfg.parent;
 
@@ -36,7 +35,6 @@ let
       install -m755 $src/lib/apply-output.sh    $out/lib/apply-output.sh
       install -m755 $src/lib/hm-activate-files.sh $out/lib/hm-activate-files.sh
       substituteInPlace $out/bin/nix-scout \
-        --replace-fail '@scoutRoot@'    '${scoutRoot}'    \
         --replace-fail '@scoutModules@' '${scoutModules}' \
         --replace-fail '@scoutParent@'  '${scoutParent}'
       runHook postInstall
@@ -52,10 +50,6 @@ in
       type = lib.types.str;
       default = "v0id";
       description = "User owning the scout profile (profiles/per-user/<user>/nix-scout).";
-    };
-    root = lib.mkOption {
-      type = lib.types.str;
-      description = "Filesystem path to the nix-scout installation root (bin/ and lib/ live here).";
     };
     modules = lib.mkOption {
       type = lib.types.str;
