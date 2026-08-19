@@ -18,29 +18,7 @@ let
   scoutModules = cfg.modules;
   scoutParent = cfg.parent;
 
-  baseNixScoutPkg = self.packages.${pkgs.system}.nix-scout;
-
-  # Wrap the base package with paths baked in via substituteInPlace so the
-  # system binary works without env vars (including under sudo).
-  nixScoutPkg = pkgs.stdenv.mkDerivation {
-    pname = "nix-scout";
-    version = baseNixScoutPkg.version or "0.3.0";
-    src = baseNixScoutPkg;
-    dontBuild = true;
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out/bin $out/lib
-      install -m755 $src/bin/nix-scout          $out/bin/nix-scout
-      install -m755 $src/lib/materialize-module.sh $out/lib/materialize-module.sh
-      install -m755 $src/lib/apply-output.sh    $out/lib/apply-output.sh
-      install -m755 $src/lib/hm-activate-files.sh $out/lib/hm-activate-files.sh
-      substituteInPlace $out/bin/nix-scout \
-        --replace-fail '@scoutModules@' '${scoutModules}' \
-        --replace-fail '@scoutParent@'  '${scoutParent}'
-      cp -r $src/share $out/
-      runHook postInstall
-    '';
-  };
+  nixScoutPkg = self.lib.mkScoutPkg { inherit pkgs scoutModules scoutParent; };
 in
 {
   _file = toString ./nixos-module.nix;

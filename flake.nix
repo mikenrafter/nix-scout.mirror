@@ -13,6 +13,30 @@
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
   in {
+    # Wrap the base nix-scout package with scoutModules/scoutParent baked in.
+    # Used by both the NixOS module and scout-module consumers.
+    lib.mkScoutPkg = { pkgs, scoutModules, scoutParent }:
+      let base = self.packages.${pkgs.system}.nix-scout;
+      in pkgs.stdenv.mkDerivation {
+        pname = "nix-scout";
+        version = base.version or "0.3.0";
+        src = base;
+        dontBuild = true;
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/bin $out/lib
+          install -m755 $src/bin/nix-scout             $out/bin/nix-scout
+          install -m755 $src/lib/materialize-module.sh $out/lib/materialize-module.sh
+          install -m755 $src/lib/apply-output.sh       $out/lib/apply-output.sh
+          install -m755 $src/lib/hm-activate-files.sh  $out/lib/hm-activate-files.sh
+          substituteInPlace $out/bin/nix-scout \
+            --replace-fail '@scoutModules@' '${scoutModules}' \
+            --replace-fail '@scoutParent@'  '${scoutParent}'
+          cp -r $src/share $out/
+          runHook postInstall
+        '';
+      };
+
     nixScout.nixosModules.default = {
       _file = toString ./nixos-module.nix;
       imports = [
