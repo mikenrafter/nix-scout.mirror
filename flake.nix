@@ -31,10 +31,11 @@
         install -Dm755 $src/lib/materialize-module.sh $out/lib/materialize-module.sh
         install -Dm755 $src/lib/apply-output.sh       $out/lib/apply-output.sh
         install -Dm755 $src/lib/hm-activate-files.sh  $out/lib/hm-activate-files.sh
-        install -Dm644 $src/share/fish/vendor_completions.d/nix-scout.fish \
-          $out/share/fish/vendor_completions.d/nix-scout.fish
         install -Dm644 $src/share/man/man1/nix-scout.1 \
           $out/share/man/man1/nix-scout.1
+        mkdir -p $out/share/fish/vendor_completions.d
+        $out/bin/nix-scout completions fish \
+          > $out/share/fish/vendor_completions.d/nix-scout.fish
         runHook postInstall
       '';
       meta = {
