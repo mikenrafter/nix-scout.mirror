@@ -7,8 +7,17 @@ set -euo pipefail
 _SCOUT_MODULES_BAKED="@scoutModules@"
 _SCOUT_PARENT_BAKED="@scoutParent@"
 
-NIX_SCOUT_PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${USER}/nix-scout}"
-NIX_SCOUT_GCROOTS="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${USER}/nix-scout}"
+# When invoked via `sudo nix-scout`, $USER/$HOME are root's — resolve the real invoker.
+if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+  _SCOUT_USER="$SUDO_USER"
+  _SCOUT_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+else
+  _SCOUT_USER="${USER}"
+  _SCOUT_HOME="${HOME}"
+fi
+
+NIX_SCOUT_PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${_SCOUT_USER}/nix-scout}"
+NIX_SCOUT_GCROOTS="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${_SCOUT_USER}/nix-scout}"
 
 _scout_lib() {
   local name="$1"
@@ -48,8 +57,8 @@ _resolve_parent() {
 }
 
 _require_user() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    echo "nix-scout: run as your user, not root (profile and home paths depend on \$USER)" >&2
+  if [[ "$(id -u)" -eq 0 && -z "${SUDO_USER:-}" ]]; then
+    echo "nix-scout: run as your user or via sudo, not directly as root" >&2
     exit 1
   fi
 }
@@ -148,10 +157,13 @@ _switch_module() {
   mat="${mat%%$'\n'*}"
 
   echo "nix-scout: build $mat#scout" >&2
-  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file "$mat#scout")"
+  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file "$mat#scout" \
+    2> >(grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '"'"'|  → )' >&2))"
   store_path="${store_path%%$'\n'*}"
 
-  env NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
+  env HOME="$_SCOUT_HOME" \
+    USER="$_SCOUT_USER" \
+    NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
     NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
     bash "$apply_script" "$store_path" "$name"
 }

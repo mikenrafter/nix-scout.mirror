@@ -85,6 +85,15 @@ in
       );
     };
 
+    system.activationScripts.nix-scout-dirs = {
+      text = ''
+        install -d -o "${scoutUser}" -g root -m755 \
+          "/nix/var/nix/gcroots/per-user/${scoutUser}/nix-scout" \
+          "/nix/var/nix/profiles/per-user/${scoutUser}"
+      '';
+      deps = [ "users" ];
+    };
+
     system.activationScripts.nix-scout-clear = {
       text = ''
         scout_user="${scoutUser}"
@@ -100,7 +109,7 @@ in
           find "$scout_gcroots" -mindepth 1 -delete 2>/dev/null || true
         fi
       '';
-      deps = [ "users" ];
+      deps = [ "users" "nix-scout-dirs" ];
     };
   };
 }
