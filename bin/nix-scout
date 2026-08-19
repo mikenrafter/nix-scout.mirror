@@ -212,10 +212,11 @@ cmd_status() {
 
   echo "GC-roots:"
   if [[ -d "$NIX_SCOUT_GCROOTS" ]]; then
-    local found=0 name target
-    while IFS= read -r -d '' target; do
-      name="$(basename "$target")"
-      echo "  $name"
+    local found=0 link name dest
+    while IFS= read -r -d '' link; do
+      name="$(basename "$link")"
+      dest="$(readlink -f "$link" 2>/dev/null || printf '(dangling)')"
+      printf '  %s → %s\n' "$name" "$dest"
       found=1
     done < <(find "$NIX_SCOUT_GCROOTS" -mindepth 1 -maxdepth 1 -print0 2>/dev/null || true)
     [[ "$found" -eq 1 ]] || echo "  (none)"

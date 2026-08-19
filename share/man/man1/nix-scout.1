@@ -1,0 +1,162 @@
+.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.3.0" "User Commands"
+.SH NAME
+nix\-scout \- scout module switcher for NixOS
+.SH SYNOPSIS
+.B nix\-scout
+.I command
+.RI [ argument ]
+.SH DESCRIPTION
+.B nix\-scout
+materializes, builds, and applies scout modules \(em subflakes under a configured
+modules directory that each export a
+.B .#scout
+output.
+Each module is an isolated Nix flake that installs programs into a dedicated
+per\-user profile or copies home\-files into
+.IR $HOME ,
+without requiring a full
+.BR nixos\-rebuild (8).
+.PP
+The parent flake\(aqs
+.I flake.lock
+is stamped into each materialized module so all inputs are pinned consistently.
+.SH COMMANDS
+.TP
+.B list
+List available scout modules found under
+.IR $NIX_SCOUT_MODULES .
+Each entry is a directory containing a
+.IR flake.nix .
+.TP
+.BI switch " name"
+Materialize the named module to a temporary directory, build its
+.B packages.<system>.scout
+output, and apply it.
+If the output contains a
+.I bin/
+directory the result is installed into the scout profile via
+.BR nix\-env (1)
+and a Fish
+.I conf.d
+snippet is written so the profile is on
+.B PATH
+in new sessions.
+If the output contains a
+.I home\-files/
+directory its contents are copied into
+.IR $HOME .
+.TP
+.BI switch " path"
+Install a store path
+.RI ( /nix/store/\&... )
+or flake installable
+.RI ( ref # attr )
+directly into the scout profile without materializing or building a module.
+.TP
+.B status
+Show the active scout profile path, installed programs, and each registered
+gc\-root with its resolved store path.
+.TP
+.B clear
+Uninstall all packages from the scout profile, remove gc\-root symlinks, and
+delete the Fish
+.I conf.d
+snippet.
+.TP
+.BR help | \-\-help | \-h
+Print usage information.
+.SH ENVIRONMENT
+.TP
+.B NIX_SCOUT_MODULES
+Path to the directory containing scout module subflakes.
+Baked in at build time via
+.B @scoutModules@
+substitution; can be overridden at runtime with this variable.
+.TP
+.B NIX_SCOUT_PARENT
+Path to the parent flake root.
+Its
+.I flake.lock
+is copied into each materialized module so inputs are pinned to the same
+revisions as the parent.
+Baked in at build time via
+.B @scoutParent@
+substitution.
+.TP
+.B NIX_SCOUT_PROFILE
+Full path to the per\-user Nix profile.
+Defaults to
+.IR /nix/var/nix/profiles/per\-user/$USER/nix\-scout .
+.TP
+.B NIX_SCOUT_GCROOTS
+Full path to the per\-user gc\-roots directory.
+Defaults to
+.IR /nix/var/nix/gcroots/per\-user/$USER/nix\-scout .
+.SH SUDO MODE
+.B sudo nix\-scout
+is supported.
+When run as root,
+.B nix\-scout
+reads
+.B SUDO_USER
+and resolves the real invoker\(aqs profile paths and
+.B HOME
+from
+.IR /etc/passwd ,
+so all paths remain correct and no secondary
+.BR sudo (8)
+calls are needed for directory or symlink operations.
+Direct invocation as root without
+.B SUDO_USER
+set is rejected.
+.SH SCOUT MODULES
+A scout module is a directory under
+.I $NIX_SCOUT_MODULES
+containing a
+.I flake.nix
+that exports
+.BR packages.<system>.scout .
+The output must be one of:
+.IP \(bu 2
+A derivation with a
+.I bin/
+subdirectory \(em installed into the scout profile via
+.BR nix\-env (1).
+.IP \(bu 2
+A derivation with a
+.I home\-files/
+subdirectory \(em each file is copied verbatim into
+.IR $HOME ,
+preserving the relative path structure.
+.PP
+Scout modules cannot set system\-wide NixOS options.
+Use the core flake or
+.B nixos\-rebuild
+for that.
+.SH FILES
+.TP
+.I /nix/var/nix/profiles/per\-user/$USER/nix\-scout
+The dedicated scout Nix profile.
+.TP
+.I /nix/var/nix/gcroots/per\-user/$USER/nix\-scout/
+Directory of gc\-root symlinks preventing installed store paths from being
+garbage collected.
+.TP
+.I $XDG_CONFIG_HOME/fish/conf.d/nix\-scout.fish
+Written after a successful profile\-mode install so the scout profile bin is on
+.B PATH
+in new Fish sessions.
+Removed by
+.BR "nix\-scout clear" .
+Do not edit manually.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Usage error, module not found, or build failure.
+.SH SEE ALSO
+.BR nix\-env (1),
+.BR nix (1),
+.BR nixos\-rebuild (8)

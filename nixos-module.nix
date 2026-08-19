@@ -37,6 +37,7 @@ let
       substituteInPlace $out/bin/nix-scout \
         --replace-fail '@scoutModules@' '${scoutModules}' \
         --replace-fail '@scoutParent@'  '${scoutParent}'
+      cp -r $src/share $out/
       runHook postInstall
     '';
   };
