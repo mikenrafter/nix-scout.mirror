@@ -107,12 +107,15 @@ usage() {
 nix-scout — scout module switcher
 
 Usage:
-  nix-scout list              List scout modules under \$NIX_SCOUT_MODULES
-  nix-scout switch <name>     Materialize, build, and apply a scout module
-  nix-scout switch <path>     Install a store path or flake installable into profile
-  nix-scout status            Show active scout profile + gc-roots
-  nix-scout clear             Clear scout profile and gc-roots
-  nix-scout completions fish  Print Fish shell completions to stdout
+  nix-scout list                        List scout modules under \$NIX_SCOUT_MODULES
+  nix-scout switch <name> [NIX-FLAGS]   Materialize, build, and apply a scout module
+  nix-scout switch <path>               Install a store path or flake installable into profile
+  nix-scout status                      Show active scout profile + gc-roots
+  nix-scout clear                       Clear scout profile and gc-roots
+  nix-scout completions fish            Print Fish shell completions to stdout
+
+NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
+Flags may appear before or after <name>, or after -- for flags that take arguments.
 
 Environment (override via env var or baked at build time):
   NIX_SCOUT_MODULES   ${NIX_SCOUT_MODULES:-${_SCOUT_MODULES_BAKED}}
@@ -141,7 +144,9 @@ cmd_list() {
 
 _switch_module() {
   local name="$1"
-  local modules mod_dir mat mat_script apply_script store_path
+  shift
+  local nix_extra=("$@")
+  local modules mod_dir mat mat_script apply_script store_path err_log
 
   modules="$(_resolve_modules)"
   mod_dir="$modules/$name"
@@ -158,8 +163,14 @@ _switch_module() {
   mat="${mat%%$'\n'*}"
 
   echo "nix-scout: build $mat#scout" >&2
-  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file "$mat#scout" \
-    2> >(grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '\''|  → )' >&2))"
+  err_log="$(mktemp)"
+  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file \
+    "${nix_extra[@]}" "$mat#scout" 2>"$err_log")" \
+    && nix_ok=true || nix_ok=false
+  grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '\''|  → )' \
+    "$err_log" >&2 || true
+  rm -f "$err_log"
+  [[ "$nix_ok" == "true" ]] || exit 1
   store_path="${store_path%%$'\n'*}"
 
   env HOME="$_SCOUT_HOME" \
@@ -179,7 +190,31 @@ _switch_path() {
 }
 
 cmd_switch() {
-  local arg="${1:-}"
+  local arg=""
+  local nix_extra=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --)
+        shift
+        nix_extra+=("$@")
+        break
+        ;;
+      --*)
+        nix_extra+=("$1")
+        shift
+        ;;
+      *)
+        if [[ -z "$arg" ]]; then
+          arg="$1"
+        else
+          nix_extra+=("$1")
+        fi
+        shift
+        ;;
+    esac
+  done
+
   if [[ -z "$arg" ]]; then
     echo "nix-scout switch: missing argument" >&2
     usage >&2
@@ -193,7 +228,7 @@ cmd_switch() {
 
   local modules="$(_resolve_modules)"
   if [[ -f "$modules/$arg/flake.nix" ]]; then
-    _switch_module "$arg"
+    _switch_module "$arg" "${nix_extra[@]}"
     return
   fi
 
