@@ -86,7 +86,7 @@ in
 
       home.activation.linkGeneration = lib.mkForce (
         lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-          ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/hm-activate-files.sh
+          newGenPath="$newGenPath" oldGenPath="''${oldGenPath:-}" ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/hm-activate-files.sh
         ''
       );
     };
