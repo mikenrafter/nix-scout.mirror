@@ -12,8 +12,8 @@ if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
   _SCOUT_USER="$SUDO_USER"
   _SCOUT_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
 else
-  _SCOUT_USER="${USER}"
-  _SCOUT_HOME="${HOME}"
+  _SCOUT_USER="${USER:-}"
+  _SCOUT_HOME="${HOME:-}"
 fi
 
 NIX_SCOUT_PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${_SCOUT_USER}/nix-scout}"
