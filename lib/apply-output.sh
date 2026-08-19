@@ -94,8 +94,14 @@ if [[ -d "$STORE/bin" ]]; then
   # without requiring a nixos-rebuild. After a rebuild the NixOS module takes over.
   FISH_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/nix-scout.fish"
   mkdir -p "$(dirname "$FISH_CONF")"
-  printf '# managed by nix-scout switch — do not edit manually\nfish_add_path -m %s/bin\n' "$PROFILE" \
-    > "$FISH_CONF"
+  _fish_content="$(printf '# managed by nix-scout switch — do not edit manually\nfish_add_path -m %s/bin\n' "$PROFILE")"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    # Running as root (sudo mode) — write the file owned by the real user so
+    # subsequent non-root runs can overwrite it.
+    printf '%s\n' "$_fish_content" | install -m644 -o "$USER" /dev/stdin "$FISH_CONF"
+  else
+    printf '%s\n' "$_fish_content" > "$FISH_CONF"
+  fi
   echo "nix-scout: wrote $FISH_CONF — open a new terminal or run: fish_add_path -m $PROFILE/bin"
   exit 0
 fi

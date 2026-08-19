@@ -24,7 +24,7 @@ let
   # system binary works without env vars (including under sudo).
   nixScoutPkg = pkgs.stdenv.mkDerivation {
     pname = "nix-scout";
-    version = baseNixScoutPkg.version or "0.2.0";
+    version = baseNixScoutPkg.version or "0.3.0";
     src = baseNixScoutPkg;
     dontBuild = true;
     installPhase = ''
