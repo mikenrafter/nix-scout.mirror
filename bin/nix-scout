@@ -243,14 +243,9 @@ cmd_switch() {
 cmd_status() {
   echo "=== nix-scout status ==="
   echo "Profile: $NIX_SCOUT_PROFILE"
-  echo "Modules: $(_resolve_modules)"
+  echo "Module Directory: $(_resolve_modules)"
 
-  if [[ -e "$NIX_SCOUT_PROFILE" ]]; then
-    echo "Programs:"
-    nix-env -p "$NIX_SCOUT_PROFILE" -q 2>/dev/null || true
-  fi
-
-  echo "GC-roots:"
+  echo "Scouts Active:"
   if [[ -d "$NIX_SCOUT_GCROOTS" ]]; then
     local found=0 link name dest
     while IFS= read -r -d '' link; do
