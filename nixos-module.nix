@@ -38,10 +38,15 @@ in
       type = lib.types.str;
       description = "Filesystem path to the parent flake root (for lock merge).";
     };
+    prebuiltModules = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [];
+      description = "Scout module packages built during nixos-rebuild and installed system-wide.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ nixScoutPkg ];
+    environment.systemPackages = [ nixScoutPkg ] ++ cfg.prebuiltModules;
 
     environment.profiles = lib.mkBefore [ scoutProfile ];
 
