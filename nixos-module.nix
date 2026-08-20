@@ -1,59 +1,57 @@
-{ self, ... }:
+{ self, nixpkgs, parent, modulesRel }:
 
 # nix-scout host framework — PATH, profile, HM copy-activator, clear-on-activation.
-# Scout payload modules live under $NIX_SCOUT_MODULES and are switched at runtime.
+# Scout payload modules live under ${parent}/${modulesRel} and are switched at runtime.
 #
+# Constructor: nixosModule parent modulesRel
 # module-mode: nix-scout cannot set NixOS options like programs.steam.enable.
 # System-wide options belong in the core flake / nfb, not scout modules.
 
 { config, lib, pkgs, ... }:
 
 let
-  cfg = config.v0id.scout;
+  modulesDir = "${parent}/${modulesRel}";
 
-  scoutUser = cfg.user;
-  scoutProfile = "/nix/var/nix/profiles/per-user/${scoutUser}/nix-scout";
-  scoutProfileBin = "${scoutProfile}/bin";
+  nixScoutPkg = self.lib.mkScoutPkg {
+    inherit pkgs;
+    paths = {
+      scoutParent = parent;
+      scoutModules = modulesDir;
+    };
+  };
 
-  scoutModules = cfg.modules;
-  scoutParent = cfg.parent;
+  # Live tree has no scout-paths.nix; the constructor already installs the baked
+  # CLI. `nix-scout switch nix-scout` materializes first, then mkScoutPkg reads
+  # the seeded file.
+  scoutDirs = lib.filterAttrs (name: v: v == "directory" && name != "nix-scout")
+    (builtins.readDir modulesDir);
 
-  nixScoutPkg = self.lib.mkScoutPkg { inherit pkgs scoutModules scoutParent; };
+  prebuiltModules = lib.mapAttrsToList (name: _:
+    let
+      m = import (modulesDir + "/${name}/flake.nix");
+      out = m.outputs {
+        inherit nixpkgs;
+        nix-scout = self;
+      };
+    in out.packages.${pkgs.system}.scout
+  ) scoutDirs;
+
+  normalUserNames = lib.attrNames (lib.filterAttrs (_: u: u.isNormalUser) config.users.users);
+
+  scoutBin = name: "/nix/var/nix/profiles/per-user/${name}/nix-scout/bin";
 in
 {
   _file = toString ./nixos-module.nix;
 
-  options.v0id.scout = {
-    enable = lib.mkEnableOption "nix-scout dedicated profile + PATH injection" // { default = true; };
-    user = lib.mkOption {
-      type = lib.types.str;
-      default = "v0id";
-      description = "User owning the scout profile (profiles/per-user/<user>/nix-scout).";
-    };
-    modules = lib.mkOption {
-      type = lib.types.str;
-      description = "Filesystem path to the scout modules directory (contains <name>/flake.nix drop-ins).";
-    };
-    parent = lib.mkOption {
-      type = lib.types.str;
-      description = "Filesystem path to the parent flake root (for lock merge).";
-    };
-    prebuiltModules = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [];
-      description = "Scout module packages built during nixos-rebuild and installed system-wide.";
-    };
-  };
+  environment.systemPackages = [ nixScoutPkg ] ++ prebuiltModules;
 
-  config = lib.mkIf cfg.enable {
-    environment.systemPackages = [ nixScoutPkg ] ++ cfg.prebuiltModules;
-
-    environment.profiles = lib.mkBefore [ scoutProfile ];
-
-    home-manager.users.${scoutUser} = { lib, ... }: {
-      home.sessionPath = [ scoutProfileBin ];
+  # sharedModules + mkForce concatenates with the host's mkForce [] (niri strip)
+  # without reading home-manager.users / users.users in a cycle.
+  home-manager.sharedModules = lib.mkForce [
+    ({ config, lib, ... }: {
+      home.sessionPath = [ (scoutBin config.home.username) ];
       programs.fish.interactiveShellInit = lib.mkAfter ''
-        fish_add_path -m ${scoutProfileBin}
+        fish_add_path -m ${scoutBin config.home.username}
       '';
 
       home.activation.checkLinkTargets = lib.mkForce (
@@ -67,33 +65,32 @@ in
           ${pkgs.coreutils}/bin/env "newGenPath=$newGenPath" "oldGenPath=''${oldGenPath:-}" ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/hm-activate-files.sh
         ''
       );
-    };
+    })
+  ];
 
-    system.activationScripts.nix-scout-dirs = {
-      text = ''
-        install -d -o "${scoutUser}" -g root -m755 \
-          "/nix/var/nix/gcroots/per-user/${scoutUser}/nix-scout" \
-          "/nix/var/nix/profiles/per-user/${scoutUser}"
-      '';
-      deps = [ "users" ];
-    };
+  system.activationScripts.nix-scout-dirs = {
+    text = lib.concatMapStrings (user: ''
+      install -d -o "${user}" -g root -m755 \
+        "/nix/var/nix/gcroots/per-user/${user}/nix-scout" \
+        "/nix/var/nix/profiles/per-user/${user}"
+    '') normalUserNames;
+    deps = [ "users" ];
+  };
 
-    system.activationScripts.nix-scout-clear = {
-      text = ''
-        scout_user="${scoutUser}"
-        scout_profile="/nix/var/nix/profiles/per-user/${scoutUser}/nix-scout"
-        scout_gcroots="/nix/var/nix/gcroots/per-user/${scoutUser}/nix-scout"
+  system.activationScripts.nix-scout-clear = {
+    text = lib.concatMapStrings (user: ''
+      scout_profile="/nix/var/nix/profiles/per-user/${user}/nix-scout"
+      scout_gcroots="/nix/var/nix/gcroots/per-user/${user}/nix-scout"
 
-        if [[ -e "$scout_profile" ]]; then
-          ${pkgs.nix}/bin/nix-env -p "$scout_profile" --uninstall '.*' 2>/dev/null || true
-          rm -f "$scout_profile" "$scout_profile-"* 2>/dev/null || true
-        fi
+      if [[ -e "$scout_profile" ]]; then
+        ${pkgs.nix}/bin/nix-env -p "$scout_profile" --uninstall '.*' 2>/dev/null || true
+        rm -f "$scout_profile" "$scout_profile-"* 2>/dev/null || true
+      fi
 
-        if [[ -d "$scout_gcroots" ]]; then
-          find "$scout_gcroots" -mindepth 1 -delete 2>/dev/null || true
-        fi
-      '';
-      deps = [ "users" "nix-scout-dirs" ];
-    };
+      if [[ -d "$scout_gcroots" ]]; then
+        find "$scout_gcroots" -mindepth 1 -delete 2>/dev/null || true
+      fi
+    '') normalUserNames;
+    deps = [ "users" "nix-scout-dirs" ];
   };
 }

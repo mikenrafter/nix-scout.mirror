@@ -13,10 +13,15 @@
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
   in {
-    # Wrap the base nix-scout package with scoutModules/scoutParent baked in.
-    # Used by both the NixOS module and scout-module consumers.
-    lib.mkScoutPkg = { pkgs, scoutModules, scoutParent }:
-      let base = self.packages.${pkgs.system}.nix-scout;
+    # Bake scoutModules/scoutParent. Materialized modules pass `dir` (materialize
+    # seeds dir/scout-paths.nix). The NixOS constructor passes `paths` directly.
+    lib.mkScoutPkg = { pkgs, dir ? null, paths ? null }:
+      let
+        resolved =
+          if paths != null then paths
+          else import (dir + "/scout-paths.nix");
+        inherit (resolved) scoutModules scoutParent;
+        base = self.packages.${pkgs.system}.nix-scout;
       in pkgs.stdenv.mkDerivation {
         pname = "nix-scout";
         version = base.version or "0.3.0";
@@ -37,10 +42,14 @@
         '';
       };
 
-    nixScout.nixosModules.default = {
+    # parent: live filesystem path to the host flake root.
+    # modulesRel: directory under parent that contains <name>/flake.nix drop-ins.
+    nixosModule = parent: modulesRel: {
       _file = toString ./nixos-module.nix;
       imports = [
-        (import ./nixos-module.nix { inherit self; })
+        (import ./nixos-module.nix {
+          inherit self nixpkgs parent modulesRel;
+        })
       ];
     };
 

@@ -24,5 +24,21 @@ elif [[ ! -f "$tmp/flake.lock" ]]; then
   (cd "$tmp" && (nix flake lock --no-write-lock-file 2>/dev/null || nix flake lock) >/dev/null)
 fi
 
+# Stamp live parent/modules paths so payload flakes (e.g. the nix-scout CLI
+# module) can bake them without hardcoding a host checkout.
+_nix_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
+modules_dir="$(cd "$(dirname "$MODULE_DIR")" && pwd)"
+{
+  printf '{\n'
+  printf '  scoutParent = %s;\n' "$(_nix_str "${NIX_SCOUT_PARENT}")"
+  printf '  scoutModules = %s;\n' "$(_nix_str "$modules_dir")"
+  printf '}\n'
+} >"$tmp/scout-paths.nix"
+
 export NIX_SCOUT_MATERIALIZED="$tmp"
 printf '%s\n' "$tmp"
