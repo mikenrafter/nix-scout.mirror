@@ -2,11 +2,6 @@
 # nix-scout — scan modules/, materialize to /tmp, build .#scout, apply output.
 set -euo pipefail
 
-# @-delimited values are replaced by the NixOS module at build time via substituteInPlace.
-# Env vars are the override mechanism for dev runs. Neither has a fallback — be explicit.
-_SCOUT_MODULES_BAKED="@scoutModules@"
-_SCOUT_PARENT_BAKED="@scoutParent@"
-
 # When invoked via `sudo nix-scout`, $USER/$HOME are root's — resolve the real invoker.
 if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
   _SCOUT_USER="$SUDO_USER"
@@ -18,6 +13,7 @@ fi
 
 NIX_SCOUT_PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${_SCOUT_USER}/nix-scout}"
 NIX_SCOUT_GCROOTS="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${_SCOUT_USER}/nix-scout}"
+NIX_SCOUT_PATHS_FILE="${NIX_SCOUT_PATHS_FILE:-/var/lib/nix-scout/paths}"
 
 _scout_lib() {
   local name="$1"
@@ -30,30 +26,33 @@ _scout_lib() {
   return 1
 }
 
+_SCOUT_PATHS_MISSING_MSG="nix-scout: \${NIX_SCOUT_PATHS_FILE} is missing — install the nix-scout NixOS module (inputs.nix-scout.nixosModule <parent> <modulesRel>) and rebuild"
+
+_load_paths_file() {
+  if [[ ! -f "$NIX_SCOUT_PATHS_FILE" ]]; then
+    echo "$_SCOUT_PATHS_MISSING_MSG" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$NIX_SCOUT_PATHS_FILE"
+}
+
 _resolve_modules() {
-  if [[ "${_SCOUT_MODULES_BAKED}" != "@"* ]]; then
-    printf '%s' "${_SCOUT_MODULES_BAKED}"
-    return 0
+  _load_paths_file
+  if [[ -z "${NIX_SCOUT_MODULES:-}" ]]; then
+    echo "nix-scout: NIX_SCOUT_MODULES not set in ${NIX_SCOUT_PATHS_FILE}" >&2
+    exit 1
   fi
-  if [[ -n "${NIX_SCOUT_MODULES:-}" ]]; then
-    printf '%s' "$NIX_SCOUT_MODULES"
-    return 0
-  fi
-  echo "nix-scout: NIX_SCOUT_MODULES is not set and no baked value — set it explicitly" >&2
-  exit 1
+  printf '%s' "$NIX_SCOUT_MODULES"
 }
 
 _resolve_parent() {
-  if [[ "${_SCOUT_PARENT_BAKED}" != "@"* ]]; then
-    printf '%s' "${_SCOUT_PARENT_BAKED}"
-    return 0
+  _load_paths_file
+  if [[ -z "${NIX_SCOUT_PARENT:-}" ]]; then
+    echo "nix-scout: NIX_SCOUT_PARENT not set in ${NIX_SCOUT_PATHS_FILE}" >&2
+    exit 1
   fi
-  if [[ -n "${NIX_SCOUT_PARENT:-}" ]]; then
-    printf '%s' "$NIX_SCOUT_PARENT"
-    return 0
-  fi
-  echo "nix-scout: NIX_SCOUT_PARENT is not set and no baked value — set it explicitly" >&2
-  exit 1
+  printf '%s' "$NIX_SCOUT_PARENT"
 }
 
 _require_user() {
@@ -117,15 +116,20 @@ Usage:
 NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
 Flags may appear before or after <name>, or after -- for flags that take arguments.
 
-Environment (override via env var or baked at build time):
-  NIX_SCOUT_MODULES   ${NIX_SCOUT_MODULES:-${_SCOUT_MODULES_BAKED}}
-  NIX_SCOUT_PARENT    ${NIX_SCOUT_PARENT:-${_SCOUT_PARENT_BAKED}}
+Environment (paths file: $NIX_SCOUT_PATHS_FILE — written by the nix-scout NixOS module):
+  NIX_SCOUT_MODULES   (see paths file)
+  NIX_SCOUT_PARENT    (see paths file)
+  NIX_SCOUT_PATHS_FILE $NIX_SCOUT_PATHS_FILE
   NIX_SCOUT_PROFILE   $NIX_SCOUT_PROFILE
   NIX_SCOUT_GCROOTS   $NIX_SCOUT_GCROOTS
 
 Scout modules are subflakes under modules/<name>/flake.nix. Each exports .#scout.
 
-module-mode: scout modules cannot set system-wide NixOS options (use nfb / core config).
+Rebuild prebuild passes systemRebuild=true into module outputs; `switch` materializes
+scout-context.nix with systemRebuild=false. Modules read mode via nix-scout.lib.readSystemRebuild
+or by importing ./scout-context.nix (see lib/scout-module.nix).
+
+module-mode: scout modules cannot set system-wide NixOS options (use core config).
 EOF
 }
 

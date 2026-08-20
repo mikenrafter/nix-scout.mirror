@@ -69,9 +69,9 @@ Print usage information.
 .TP
 .B NIX_SCOUT_MODULES
 Path to the directory containing scout module subflakes.
-Baked in at build time via
-.B @scoutModules@
-substitution; can be overridden at runtime with this variable.
+Set in
+.IR /var/lib/nix-scout/paths
+by the nix\-scout NixOS module on activation.
 .TP
 .B NIX_SCOUT_PARENT
 Path to the parent flake root.
@@ -79,9 +79,21 @@ Its
 .I flake.lock
 is copied into each materialized module so inputs are pinned to the same
 revisions as the parent.
-Baked in at build time via
-.B @scoutParent@
-substitution.
+Set in
+.IR /var/lib/nix-scout/paths
+by the nix\-scout NixOS module on activation.
+.TP
+.B NIX_SCOUT_PATHS_FILE
+Shell\-sourceable file containing
+.BR NIX_SCOUT_PARENT
+and
+.BR NIX_SCOUT_MODULES
+assignments.
+Defaults to
+.IR /var/lib/nix-scout/paths .
+The CLI requires this file; install
+.BR inputs.nix-scout.nixosModule
+and rebuild if it is missing.
 .TP
 .B NIX_SCOUT_PROFILE
 Full path to the per\-user Nix profile.
@@ -133,6 +145,27 @@ Scout modules cannot set system\-wide NixOS options.
 Use the core flake or
 .B nixos\-rebuild
 for that.
+.PP
+Module
+.I flake.nix
+outputs receive
+.BR systemRebuild :
+.B true
+when the nix\-scout NixOS module prebuilds all scout modules during a system rebuild
+(passed directly into
+.IR outputs ).
+.B nix\-scout switch
+materializes the module and writes
+.IR scout\-context.nix
+with
+.BR systemRebuild = false ;
+modules should read it via
+.BR nix\-scout.lib.readSystemRebuild
+or the same
+.IR scout\-context.nix
+import pattern.
+Use this to ship a lightweight stub during rebuild while installing the full payload
+only on explicit switch \(e.g. seasonal or space\-heavy tools).
 .SH FILES
 .TP
 .I /nix/var/nix/profiles/per\-user/$USER/nix\-scout

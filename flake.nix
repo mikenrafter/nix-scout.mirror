@@ -12,35 +12,13 @@
   outputs = { self, nixpkgs, home-manager, ... }: let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
+    scoutModuleLib = import ./lib/scout-module.nix;
   in {
-    # Bake scoutModules/scoutParent. Materialized modules pass `dir` (materialize
-    # seeds dir/scout-paths.nix). The NixOS constructor passes `paths` directly.
-    lib.mkScoutPkg = { pkgs, dir ? null, paths ? null }:
-      let
-        resolved =
-          if paths != null then paths
-          else import (dir + "/scout-paths.nix");
-        inherit (resolved) scoutModules scoutParent;
-        base = self.packages.${pkgs.system}.nix-scout;
-      in pkgs.stdenv.mkDerivation {
-        pname = "nix-scout";
-        version = base.version or "0.3.0";
-        src = base;
-        dontBuild = true;
-        installPhase = ''
-          runHook preInstall
-          mkdir -p $out/bin $out/lib
-          install -m755 $src/bin/nix-scout             $out/bin/nix-scout
-          install -m755 $src/lib/materialize-module.sh $out/lib/materialize-module.sh
-          install -m755 $src/lib/apply-output.sh       $out/lib/apply-output.sh
-          install -m755 $src/lib/hm-activate-files.sh  $out/lib/hm-activate-files.sh
-          substituteInPlace $out/bin/nix-scout \
-            --replace-fail '@scoutModules@' '${scoutModules}' \
-            --replace-fail '@scoutParent@'  '${scoutParent}'
-          cp -r $src/share $out/
-          runHook postInstall
-        '';
-      };
+    lib = scoutModuleLib;
+
+    overlays.default = final: prev: {
+      nix-scout = self.packages.${prev.system}.nix-scout;
+    };
 
     # parent: live filesystem path to the host flake root.
     # modulesRel: directory under parent that contains <name>/flake.nix drop-ins.

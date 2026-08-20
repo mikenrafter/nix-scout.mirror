@@ -4,27 +4,19 @@
 # Scout payload modules live under ${parent}/${modulesRel} and are switched at runtime.
 #
 # Constructor: nixosModule parent modulesRel
-# module-mode: nix-scout cannot set NixOS options like programs.steam.enable.
-# System-wide options belong in the core flake / nfb, not scout modules.
+# Runtime paths: /var/lib/nix-scout/paths (written on activation).
+# Exposes pkgs.nix-scout via nixpkgs.overlays.default for scout-module flakes.
 
 { config, lib, pkgs, ... }:
 
 let
   modulesDir = "${parent}/${modulesRel}";
+  scoutPkgs = pkgs.extend self.overlays.default;
+  nixScoutPkg = scoutPkgs.nix-scout;
 
-  nixScoutPkg = self.lib.mkScoutPkg {
-    inherit pkgs;
-    paths = {
-      scoutParent = parent;
-      scoutModules = modulesDir;
-    };
-  };
-
-  # Live tree has no scout-paths.nix; the constructor already installs the baked
-  # CLI. `nix-scout switch nix-scout` materializes first, then mkScoutPkg reads
-  # the seeded file.
-  scoutDirs = lib.filterAttrs (name: v: v == "directory" && name != "nix-scout")
-    (builtins.readDir modulesDir);
+  scoutDirs = lib.filterAttrs (name: v:
+    v == "directory" && builtins.pathExists (modulesDir + "/${name}/flake.nix")
+  ) (builtins.readDir modulesDir);
 
   prebuiltModules = lib.mapAttrsToList (name: _:
     let
@@ -32,6 +24,7 @@ let
       out = m.outputs {
         inherit nixpkgs;
         nix-scout = self;
+        systemRebuild = true;
       };
     in out.packages.${pkgs.system}.scout
   ) scoutDirs;
@@ -43,10 +36,10 @@ in
 {
   _file = toString ./nixos-module.nix;
 
-  environment.systemPackages = [ nixScoutPkg ] ++ prebuiltModules;
+  nixpkgs.overlays = [ self.overlays.default ];
 
-  # sharedModules + mkForce concatenates with the host's mkForce [] (niri strip)
-  # without reading home-manager.users / users.users in a cycle.
+  environment.systemPackages = prebuiltModules;
+
   home-manager.sharedModules = lib.mkForce [
     ({ config, lib, ... }: {
       home.sessionPath = [ (scoutBin config.home.username) ];
@@ -68,13 +61,24 @@ in
     })
   ];
 
+  system.activationScripts.nix-scout-config = {
+    text = ''
+      install -d -m755 /var/lib/nix-scout
+      cat > /var/lib/nix-scout/paths <<EOF
+      NIX_SCOUT_PARENT=${parent}
+      NIX_SCOUT_MODULES=${modulesDir}
+      EOF
+      chmod 644 /var/lib/nix-scout/paths
+    '';
+  };
+
   system.activationScripts.nix-scout-dirs = {
     text = lib.concatMapStrings (user: ''
       install -d -o "${user}" -g root -m755 \
         "/nix/var/nix/gcroots/per-user/${user}/nix-scout" \
         "/nix/var/nix/profiles/per-user/${user}"
     '') normalUserNames;
-    deps = [ "users" ];
+    deps = [ "users" "nix-scout-config" ];
   };
 
   system.activationScripts.nix-scout-clear = {
