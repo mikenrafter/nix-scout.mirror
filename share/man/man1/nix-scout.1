@@ -87,10 +87,14 @@ Each check prints
 .B [ OK ]
 or
 .B [FAIL]
-with a fix hint:
+with a fix hint. Path\-access failures are mutated in place when
+.B doctor
+can elevate (same grant as the
+.I nix\-scout\-flakelet\-access
+activation script):
 .RS
 .IP \(bu 2
-.B eval\-user access:
+.B modules\-path access:
 verifies the flakelet eval user (read from
 .IR /etc/flakelet/config.json ,
 field
@@ -99,10 +103,24 @@ or
 .BR user ;
 defaults to
 .IR flakelet )
-can traverse the parent flake directory.
-Fix: add group\-execute on the parent and add the eval user to the
+can reach
+.I NIX_SCOUT_MODULES
+using
+.B primary\-gid\-only
+credentials.
+Flakelet drops privileges with
+.B setuid/setgid
+and does
+.B not
+call
+.BR initgroups ,
+so supplementary groups such as
 .I users
-group in your NixOS config.
+do not help during
+.BR "nix flake metadata" .
+Fix/mutation: other\-execute on every ancestor directory and other\-rx on the
+modules directory and registered module leaves
+.RB ( o+x / o+rx ).
 .IP \(bu 2
 .B state dir:
 verifies
@@ -117,9 +135,9 @@ activation script automatically).
 .B service health:
 runs
 .B flakelet status \-\-json
-and reports any services in
-.B failed
-or
+and reports any services with a non\-empty
+.B last_error
+or a
 .B held
 state.
 Skipped if
@@ -128,16 +146,10 @@ is unreadable or
 .B flakelet
 is not on
 .BR PATH .
-Fix: inspect logs with
+Fix: repair path access, then
+.B sudo flakelet update <name> ;
+inspect logs with
 .BR "flakelet log <name>" .
-.IP \(bu 2
-.B home\-dir execute bit:
-when the parent flake lives under
-.IR /home/ ,
-verifies the home directory has the group\-execute bit set so the
-eval user can traverse it.
-Fix:
-.BI "chmod g+x " homedir .
 .RE
 .IP
 Exits
@@ -280,7 +292,7 @@ reads
 .B eval_user
 (or
 .BR user )
-from this file to determine which user to test for parent\-directory access.
+and the registered service names from this file when checking modules\-path access.
 .TP
 .I /nix/var/nix/profiles/per\-user/$USER/nix\-scout
 The dedicated scout Nix profile.

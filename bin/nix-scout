@@ -296,13 +296,23 @@ cmd_clear() {
 }
 
 cmd_doctor() {
-  local parent eval_user home_dir
+  local modules_dir eval_user access_lib
   local all_ok=true
+  local -a module_names=()
+  local failing_paths grant_rc check_rc
 
-  parent="$(_resolve_parent)"
+  modules_dir="$(_resolve_modules)"
 
-  # ── 1. eval-user access ──────────────────────────────────────────────────
-  # Read the flakelet eval user from its config (may be named eval_user or user).
+  # shellcheck source=../lib/flakelet-access.sh
+  access_lib="$(_scout_lib flakelet-access.sh)" || {
+    echo "nix-scout: flakelet-access.sh missing from package" >&2
+    return 1
+  }
+  # shellcheck source=/dev/null
+  source "$access_lib"
+
+  # ── 1. modules-path access (primary-gid-only model) ──────────────────────
+  # Flakelet setuid/setgid without initgroups — sudo -u checks are misleading.
   eval_user=""
   if [[ -f /etc/flakelet/config.json ]]; then
     eval_user="$(jq -r '.eval_user // .user // empty' /etc/flakelet/config.json 2>/dev/null || true)"
@@ -311,13 +321,35 @@ cmd_doctor() {
     eval_user="flakelet"
   fi
 
-  if sudo -u "$eval_user" test -x "$parent" 2>/dev/null; then
-    printf '[ OK ]  eval-user (%s) can traverse parent: %s\n' "$eval_user" "$parent"
+  if [[ -f /etc/flakelet/config.json ]]; then
+    mapfile -t module_names < <(jq -r '.services // {} | keys[]' /etc/flakelet/config.json 2>/dev/null || true)
+  fi
+
+  check_rc=0
+  failing_paths="$(flakelet_access_check_tree "$modules_dir" "$eval_user" "${module_names[@]}")" || check_rc=$?
+  if [[ "$check_rc" -eq 0 ]]; then
+    printf '[ OK ]  eval-user (%s) can reach modules dir (primary gid): %s\n' "$eval_user" "$modules_dir"
   else
-    printf '[FAIL]  eval-user (%s) cannot traverse parent: %s\n' "$eval_user" "$parent"
-    printf '        Fix: sudo chmod g+x "%s"  (add group-execute for the users group)\n' "$parent"
-    printf '        Also ensure: users.users.%s.extraGroups = ["users"] in your NixOS config\n' "$eval_user"
-    all_ok=false
+    printf '[FAIL]  eval-user (%s) cannot reach modules path with primary gid only\n' "$eval_user"
+    if [[ -n "$failing_paths" ]]; then
+      while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        printf '          blocked: %s\n' "$line"
+      done <<< "$failing_paths"
+    fi
+    printf '        Mutating path access (o+x ancestors, o+rx modules)…\n'
+    grant_rc=0
+    flakelet_access_grant_tree "$modules_dir" "${module_names[@]}" || grant_rc=$?
+    check_rc=0
+    flakelet_access_check_tree "$modules_dir" "$eval_user" "${module_names[@]}" >/dev/null || check_rc=$?
+    if [[ "$grant_rc" -eq 0 && "$check_rc" -eq 0 ]]; then
+      printf '[ OK ]  path access repaired for %s\n' "$modules_dir"
+    else
+      printf '[FAIL]  path access still blocked after mutation\n'
+      printf '        Fix: rebuild with nix-scout NixOS module (nix-scout-flakelet-access)\n'
+      printf '        Or: bash %s grant %s\n' "$access_lib" "$modules_dir"
+      all_ok=false
+    fi
   fi
 
   # ── 2. state dir readable ────────────────────────────────────────────────
@@ -337,19 +369,24 @@ cmd_doctor() {
       flt_json="$(flakelet status --json 2>/dev/null || true)"
       if [[ -n "$flt_json" ]]; then
         local failed
+        # flakelet status --json is an array of service objects.
         failed="$(printf '%s' "$flt_json" | jq -r '
-          to_entries[]
-          | select(.value.state == "failed" or .value.state == "held")
-          | "\(.key): \(.value.state)"
+          .[]?
+          | select(
+              (.held != null)
+              or ((.last_error != null) and (.last_error != ""))
+            )
+          | "\(.name): \(if .held != null then "held" else "error" end)"
         ' 2>/dev/null || true)"
         if [[ -z "$failed" ]]; then
           printf '[ OK ]  all flakelet services are healthy\n'
         else
-          printf '[FAIL]  flakelet services in failed/held state:\n'
+          printf '[FAIL]  flakelet services in error/held state:\n'
           while IFS= read -r line; do
             printf '          %s\n' "$line"
           done <<< "$failed"
           printf '        Fix: check logs with: flakelet log <service-name>\n'
+          printf '        After repairing path access, re-run: sudo flakelet update <name>\n'
           all_ok=false
         fi
       else
@@ -360,27 +397,6 @@ cmd_doctor() {
     fi
   else
     printf '[ -- ]  service status skipped (state dir unreadable)\n'
-  fi
-
-  # ── 4. home mode ─────────────────────────────────────────────────────────
-  if [[ "$parent" == /home/* ]]; then
-    home_dir="/home/$(printf '%s' "$parent" | cut -d/ -f3)"
-    local mode
-    mode="$(stat -c '%a' "$home_dir" 2>/dev/null || true)"
-    if [[ -n "$mode" ]]; then
-      # Group execute bit: octal digit at position 2 from left (index 1); bit value 010
-      local group_digit="${mode: -2:1}"
-      if (( group_digit & 1 )); then
-        printf '[ OK ]  home dir %s has group-execute bit (mode %s)\n' "$home_dir" "$mode"
-      else
-        printf '[FAIL]  home dir %s lacks group-execute bit (mode %s)\n' "$home_dir" "$mode"
-        printf '        Fix: chmod g+x "%s"\n' "$home_dir"
-        all_ok=false
-      fi
-    else
-      printf '[FAIL]  could not stat home dir: %s\n' "$home_dir"
-      all_ok=false
-    fi
   fi
 
   if [[ "$all_ok" == "true" ]]; then

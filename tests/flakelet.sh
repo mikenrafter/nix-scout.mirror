@@ -103,7 +103,8 @@ if BIN="$(resolve_strict_nix_scout)"; then
   else
     fail "bin/nix-scout must track switch_rc so all facets run before reporting failure"
   fi
-  if "$GREP" -q 'sudo flakelet update' "$BIN"; then
+  # Doctor may mention the command in fix hints; switch must not call it inline.
+  if "$GREP" -n 'sudo flakelet update' "$BIN" | "$GREP" -vE 'printf|Fix:|re-run' | "$GREP" -q .; then
     fail "bin/nix-scout still has inline 'sudo flakelet update' — should delegate to apply-flakelet.sh"
   else
     pass "bin/nix-scout delegates flakelet to apply-flakelet.sh (no inline sudo call)"
@@ -136,8 +137,84 @@ if [[ -f "$NS_MODULE" ]]; then
   else
     fail "nixos-module.nix must throw when a flakelet module is missing settings.nix"
   fi
+  if "$GREP" -q 'flakelet-access\.sh grant' "$NS_MODULE"; then
+    pass "nixos-module.nix activation grants modules-path access via flakelet-access.sh"
+  else
+    fail "nixos-module.nix must call flakelet-access.sh grant from nix-scout-flakelet-access"
+  fi
+  if "$GREP" -q 'extraGroups.*users\|extraGroups = \[ "users" \]' "$NS_MODULE"; then
+    fail "nixos-module.nix must not rely on flakelet extraGroups=users (no initgroups)"
+  else
+    pass "nixos-module.nix does not rely on supplementary users group for flakelet"
+  fi
 else
   fail "nixos-module.nix not found at $NS_MODULE"
+fi
+
+# ── flakelet-access.sh: primary-gid-only grant/check ───────────────────────
+echo "-- flakelet-access.sh: grant/check contracts --"
+ACCESS_SCRIPT="$REPO/lib/flakelet-access.sh"
+if [[ -f "$ACCESS_SCRIPT" ]]; then
+  if "$GREP" -q 'o+x\|o+rx' "$ACCESS_SCRIPT"; then
+    pass "flakelet-access.sh grants other-execute / other-rx"
+  else
+    fail "flakelet-access.sh must chmod o+x/o+rx for primary-gid-only access"
+  fi
+  if "$GREP" -q 'flakelet_access_grant_tree\|flakelet_access_check_tree' "$ACCESS_SCRIPT"; then
+    pass "flakelet-access.sh defines grant_tree and check_tree"
+  else
+    fail "flakelet-access.sh must define flakelet_access_grant_tree and check_tree"
+  fi
+  if "$GREP" -q 'initgroups' "$ACCESS_SCRIPT"; then
+    pass "flakelet-access.sh documents flakelet missing initgroups"
+  else
+    fail "flakelet-access.sh must document why supplementary groups are ineffective"
+  fi
+
+  # Functional: 750 home-like ancestor blocks other/foreign primary-gid access.
+  tmp="$(mktemp -d)"
+  chmod 755 "$tmp"
+  mkdir -p "$tmp/home/repo/modules/svc"
+  chmod 755 "$tmp/home" "$tmp/home/repo" "$tmp/home/repo/modules" "$tmp/home/repo/modules/svc"
+  chmod 750 "$tmp/home"
+  if bash "$ACCESS_SCRIPT" check "$tmp/home/repo/modules" nobody svc >/dev/null 2>&1; then
+    fail "flakelet-access check must fail when an ancestor is mode 750 (no other-x)"
+  else
+    pass "flakelet-access check detects 750 ancestor as blocked"
+  fi
+  # Grant as current user (we own tmp) — chmod without sudo.
+  bash "$ACCESS_SCRIPT" grant "$tmp/home/repo/modules" svc
+  if bash "$ACCESS_SCRIPT" check "$tmp/home/repo/modules" nobody svc >/dev/null 2>&1; then
+    pass "flakelet-access grant repairs other-x/rx so check passes"
+  else
+    fail "flakelet-access grant should make check pass on owned temp tree"
+  fi
+  rm -rf "$tmp"
+else
+  fail "flakelet-access.sh not found at $ACCESS_SCRIPT"
+fi
+
+# ── CLI doctor: modules-path mutation + last_error health ──────────────────
+echo "-- CLI doctor: modules-path access + last_error parsing --"
+BIN=""
+if BIN="$(resolve_strict_nix_scout)"; then
+  if "$GREP" -q 'flakelet_access_grant_tree\|flakelet-access\.sh' "$BIN"; then
+    pass "bin/nix-scout doctor uses flakelet-access grant/check"
+  else
+    fail "bin/nix-scout doctor must use flakelet-access.sh for path mutation"
+  fi
+  if "$GREP" -q 'last_error' "$BIN"; then
+    pass "bin/nix-scout doctor inspects last_error from flakelet status"
+  else
+    fail "bin/nix-scout doctor must detect services via last_error (not .state)"
+  fi
+  if "$GREP" -q 'sudo -u .* test -x' "$BIN"; then
+    fail "bin/nix-scout doctor must not use sudo -u test -x (misleading with initgroups)"
+  else
+    pass "bin/nix-scout doctor does not use misleading sudo -u traverse check"
+  fi
+else
+  fail "nix-scout binary not found (doctor contracts unimplemented)"
 fi
 
 finish_suite

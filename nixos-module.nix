@@ -191,19 +191,16 @@ in
     deps = [ "users" "nix-scout-dirs" ];
   };
 
-  # Grant the flakelet eval user traversal into the parent repo directory so
-  # `flakelet update` (running as the flakelet system user, which is in the
-  # `users` group) can reach path: flake entries under ${parent}.
+  # Flakelet evaluates path: flakes as eval_user via setuid/setgid without
+  # initgroups — supplementary groups (e.g. users) are ineffective. Walk the
+  # modules tree and grant other-x / other-rx so primary-gid-only credentials
+  # can reach every registered flakelet module.
   system.activationScripts.nix-scout-flakelet-access = {
     text = ''
-      # Allow the `users` group to traverse into the parent directory.
-      # g+x grants traversal only, not directory listing — safe on user homes.
-      if [[ -d "${parent}" ]]; then
-        chmod g+x "${parent}"
-      fi
+      ${pkgs.bash}/bin/bash ${nixScoutPkg}/lib/flakelet-access.sh grant \
+        ${lib.escapeShellArg runtimeModulesDir} \
+        ${lib.escapeShellArgs (lib.attrNames flakeletServices)}
     '';
     deps = [ "users" "nix-scout-config" ];
   };
-
-  users.users.flakelet.extraGroups = [ "users" ];
 }

@@ -50,6 +50,7 @@
         install -Dm755 $src/lib/apply-hm.sh            $out/lib/apply-hm.sh
         install -Dm755 $src/lib/apply-env.sh           $out/lib/apply-env.sh
         install -Dm755 $src/lib/apply-flakelet.sh      $out/lib/apply-flakelet.sh
+        install -Dm755 $src/lib/flakelet-access.sh     $out/lib/flakelet-access.sh
         install -Dm755 $src/lib/hm-activate-files.sh   $out/lib/hm-activate-files.sh
         install -Dm644 $src/share/man/man1/nix-scout.1 \
           $out/share/man/man1/nix-scout.1
