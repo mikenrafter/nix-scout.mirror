@@ -75,6 +75,7 @@ Usage:
   nix-scout switch <path>               Install a store path or flake installable into profile
   nix-scout status                      Show active scout profile + gc-roots + flakelet status
   nix-scout clear                       Clear scout profile and gc-roots
+  nix-scout doctor                      Check flakelet integration health and print pass/fail report
   nix-scout completions fish            Print Fish shell completions to stdout
 
 NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
@@ -294,6 +295,102 @@ cmd_clear() {
   echo "nix-scout: cleared dedicated profile and gc-roots"
 }
 
+cmd_doctor() {
+  local parent eval_user home_dir
+  local all_ok=true
+
+  parent="$(_resolve_parent)"
+
+  # ── 1. eval-user access ──────────────────────────────────────────────────
+  # Read the flakelet eval user from its config (may be named eval_user or user).
+  eval_user=""
+  if [[ -f /etc/flakelet/config.json ]]; then
+    eval_user="$(jq -r '.eval_user // .user // empty' /etc/flakelet/config.json 2>/dev/null || true)"
+  fi
+  if [[ -z "$eval_user" ]]; then
+    eval_user="flakelet"
+  fi
+
+  if sudo -u "$eval_user" test -x "$parent" 2>/dev/null; then
+    printf '[ OK ]  eval-user (%s) can traverse parent: %s\n' "$eval_user" "$parent"
+  else
+    printf '[FAIL]  eval-user (%s) cannot traverse parent: %s\n' "$eval_user" "$parent"
+    printf '        Fix: sudo chmod g+x "%s"  (add group-execute for the users group)\n' "$parent"
+    printf '        Also ensure: users.users.%s.extraGroups = ["users"] in your NixOS config\n' "$eval_user"
+    all_ok=false
+  fi
+
+  # ── 2. state dir readable ────────────────────────────────────────────────
+  if test -r /var/lib/flakelet 2>/dev/null; then
+    printf '[ OK ]  /var/lib/flakelet is readable by current user\n'
+  else
+    printf '[FAIL]  /var/lib/flakelet is not readable by current user\n'
+    printf '        Fix: sudo chgrp flakelet /var/lib/flakelet && sudo chmod g+rx /var/lib/flakelet\n'
+    printf '        Or rebuild with the nix-scout NixOS module (adds nix-scout-flakelet-access activation script)\n'
+    all_ok=false
+  fi
+
+  # ── 3. service status ────────────────────────────────────────────────────
+  if test -r /var/lib/flakelet 2>/dev/null; then
+    if command -v flakelet >/dev/null 2>&1; then
+      local flt_json
+      flt_json="$(flakelet status --json 2>/dev/null || true)"
+      if [[ -n "$flt_json" ]]; then
+        local failed
+        failed="$(printf '%s' "$flt_json" | jq -r '
+          to_entries[]
+          | select(.value.state == "failed" or .value.state == "held")
+          | "\(.key): \(.value.state)"
+        ' 2>/dev/null || true)"
+        if [[ -z "$failed" ]]; then
+          printf '[ OK ]  all flakelet services are healthy\n'
+        else
+          printf '[FAIL]  flakelet services in failed/held state:\n'
+          while IFS= read -r line; do
+            printf '          %s\n' "$line"
+          done <<< "$failed"
+          printf '        Fix: check logs with: flakelet log <service-name>\n'
+          all_ok=false
+        fi
+      else
+        printf '[ OK ]  no flakelet services registered (or status unavailable)\n'
+      fi
+    else
+      printf '[ OK ]  flakelet not on PATH — skipping service status check\n'
+    fi
+  else
+    printf '[ -- ]  service status skipped (state dir unreadable)\n'
+  fi
+
+  # ── 4. home mode ─────────────────────────────────────────────────────────
+  if [[ "$parent" == /home/* ]]; then
+    home_dir="/home/$(printf '%s' "$parent" | cut -d/ -f3)"
+    local mode
+    mode="$(stat -c '%a' "$home_dir" 2>/dev/null || true)"
+    if [[ -n "$mode" ]]; then
+      # Group execute bit: octal digit at position 2 from left (index 1); bit value 010
+      local group_digit="${mode: -2:1}"
+      if (( group_digit & 1 )); then
+        printf '[ OK ]  home dir %s has group-execute bit (mode %s)\n' "$home_dir" "$mode"
+      else
+        printf '[FAIL]  home dir %s lacks group-execute bit (mode %s)\n' "$home_dir" "$mode"
+        printf '        Fix: chmod g+x "%s"\n' "$home_dir"
+        all_ok=false
+      fi
+    else
+      printf '[FAIL]  could not stat home dir: %s\n' "$home_dir"
+      all_ok=false
+    fi
+  fi
+
+  if [[ "$all_ok" == "true" ]]; then
+    printf '\nnix-scout doctor: all checks passed\n'
+  else
+    printf '\nnix-scout doctor: one or more checks failed — see hints above\n'
+    return 1
+  fi
+}
+
 cmd_completions() {
   local shell="${1:-}"
   case "$shell" in
@@ -304,13 +401,14 @@ cmd_completions() {
 complete -c nix-scout -f
 
 function __nix_scout_needs_subcommand
-    not __fish_seen_subcommand_from list switch status clear completions help --help -h
+    not __fish_seen_subcommand_from list switch status clear doctor completions help --help -h
 end
 
 complete -c nix-scout -n __nix_scout_needs_subcommand -a list        -d 'List scout modules'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a switch      -d 'Materialize, build, and apply a scout module'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a status      -d 'Show active scout profile and gc-roots'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a clear       -d 'Clear scout profile and gc-roots'
+complete -c nix-scout -n __nix_scout_needs_subcommand -a doctor      -d 'Check flakelet integration health'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a completions -d 'Print shell completions to stdout'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a help        -d 'Show usage'
 
@@ -345,6 +443,10 @@ case "${1:-}" in
   clear)
     _require_user
     cmd_clear
+    ;;
+  doctor)
+    _require_user
+    cmd_doctor
     ;;
   completions)
     shift

@@ -81,6 +81,79 @@ delete the Fish
 .I conf.d
 snippet.
 .TP
+.B doctor
+Check flakelet integration health and print a pass/fail report.
+Each check prints
+.B [ OK ]
+or
+.B [FAIL]
+with a fix hint:
+.RS
+.IP \(bu 2
+.B eval\-user access:
+verifies the flakelet eval user (read from
+.IR /etc/flakelet/config.json ,
+field
+.B eval_user
+or
+.BR user ;
+defaults to
+.IR flakelet )
+can traverse the parent flake directory.
+Fix: add group\-execute on the parent and add the eval user to the
+.I users
+group in your NixOS config.
+.IP \(bu 2
+.B state dir:
+verifies
+.I /var/lib/flakelet
+is readable by the current user.
+Fix:
+.B sudo chgrp flakelet /var/lib/flakelet && sudo chmod g+rx /var/lib/flakelet
+or rebuild with the nix\-scout NixOS module (adds the
+.I nix\-scout\-flakelet\-access
+activation script automatically).
+.IP \(bu 2
+.B service health:
+runs
+.B flakelet status \-\-json
+and reports any services in
+.B failed
+or
+.B held
+state.
+Skipped if
+.I /var/lib/flakelet
+is unreadable or
+.B flakelet
+is not on
+.BR PATH .
+Fix: inspect logs with
+.BR "flakelet log <name>" .
+.IP \(bu 2
+.B home\-dir execute bit:
+when the parent flake lives under
+.IR /home/ ,
+verifies the home directory has the group\-execute bit set so the
+eval user can traverse it.
+Fix:
+.BI "chmod g+x " homedir .
+.RE
+.IP
+Exits
+.B 1
+if any check fails.
+.TP
+.BI "completions " shell
+Print shell completions to stdout.
+Currently
+.B fish
+is the only supported
+.IR shell .
+Pipe the output into your Fish
+.I conf.d
+directory or source it in your Fish config.
+.TP
 .BR help | \-\-help | \-h
 Print usage information.
 .SH ENVIRONMENT
@@ -197,8 +270,17 @@ or the same
 .IR scout\-context.nix
 import pattern.
 Use this to ship a lightweight stub during rebuild while installing the full payload
-only on explicit switch \(e.g. seasonal or space\-heavy tools).
+only on explicit switch (e.g. seasonal or space\-heavy tools).
 .SH FILES
+.TP
+.I /etc/flakelet/config.json
+Flakelet daemon configuration.
+.B doctor
+reads
+.B eval_user
+(or
+.BR user )
+from this file to determine which user to test for parent\-directory access.
 .TP
 .I /nix/var/nix/profiles/per\-user/$USER/nix\-scout
 The dedicated scout Nix profile.
@@ -220,7 +302,9 @@ Do not edit manually.
 Success.
 .TP
 .B 1
-Usage error, module not found, or build failure.
+Usage error, module not found, build failure, or one or more
+.B doctor
+checks failed.
 .SH SEE ALSO
 .BR nix\-env (1),
 .BR nix (1),

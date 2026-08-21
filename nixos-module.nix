@@ -142,4 +142,20 @@ in
     '') normalUserNames;
     deps = [ "users" "nix-scout-dirs" ];
   };
+
+  # Grant the flakelet eval user traversal into the parent repo directory so
+  # `flakelet update` (running as the flakelet system user, which is in the
+  # `users` group) can reach path: flake entries under ${parent}.
+  system.activationScripts.nix-scout-flakelet-access = {
+    text = ''
+      # Allow the `users` group to traverse into the parent directory.
+      # g+x grants traversal only, not directory listing — safe on user homes.
+      if [[ -d "${parent}" ]]; then
+        chmod g+x "${parent}"
+      fi
+    '';
+    deps = [ "users" "nix-scout-config" ];
+  };
+
+  users.users.flakelet.extraGroups = [ "users" ];
 }
