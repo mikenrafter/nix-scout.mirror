@@ -118,8 +118,9 @@ in
     ({ config, lib, ... }: {
       home.sessionPath = [ (scoutBin config.home.username) ];
       home.sessionVariables = {
-        XDG_DATA_DIRS = "${scoutShare config.home.username}:''${XDG_DATA_DIRS}";
-        MANPATH = "${scoutMan config.home.username}:''${MANPATH}";
+        # "$VAR" is fine in "..." — Nix only interpolates ${...}. Use \${VAR} for braces.
+        XDG_DATA_DIRS = "${scoutShare config.home.username}:$XDG_DATA_DIRS";
+        MANPATH = "${scoutMan config.home.username}:$MANPATH";
       };
       programs.fish.interactiveShellInit = lib.mkAfter ''
         fish_add_path -m ${scoutBin config.home.username}
