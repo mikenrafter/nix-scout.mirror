@@ -31,7 +31,8 @@
       _file = toString ./nixos-module.nix;
       imports = [
         (import ./nixos-module.nix {
-          inherit self nixpkgs parent modulesRel flakelet;
+          nixScout = self;
+          inherit nixpkgs parent modulesRel flakelet;
         })
       ];
     };

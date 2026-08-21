@@ -1,4 +1,4 @@
-{ self, nixpkgs, parent, modulesRel, flakelet }:
+{ nixScout, nixpkgs, parent, modulesRel, flakelet }:
 
 # nix-scout host framework — PATH, profile, HM copy-activator, clear-on-activation.
 # Scout payload modules live under ${parent}/${modulesRel} and are switched at runtime.
@@ -14,24 +14,30 @@
 # Missing settings.nix when flakelets is present is a hard eval error.
 #
 # module-mode: scout modules cannot set system-wide NixOS options (use core config).
+#
+# Pure-eval note: eval-time filesystem access (readDir, pathExists, import) uses
+# `self` (the host flake's store path, received via specialArgs) so pure evaluation
+# mode is satisfied.  The live WIP path (`parent`) is written to the runtime paths
+# file and used for flakelet path: references so the CLI always sees the live tree.
 
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, self, ... }:
 
 let
-  modulesDir = "${parent}/${modulesRel}";
-  scoutPkgs = pkgs.extend self.overlays.default;
+  evalModulesDir    = "${self}/${modulesRel}";
+  runtimeModulesDir = "${parent}/${modulesRel}";
+  scoutPkgs = pkgs.extend nixScout.overlays.default;
   nixScoutPkg = scoutPkgs.nix-scout;
 
   scoutDirs = lib.filterAttrs (name: v:
-    v == "directory" && builtins.pathExists (modulesDir + "/${name}/flake.nix")
-  ) (builtins.readDir modulesDir);
+    v == "directory" && builtins.pathExists (evalModulesDir + "/${name}/flake.nix")
+  ) (builtins.readDir evalModulesDir);
 
   # Evaluate each scout-module's flake outputs (systemRebuild=true context).
   scoutOutputs = lib.mapAttrs (name: _:
-    let m = import (modulesDir + "/${name}/flake.nix");
+    let m = import (evalModulesDir + "/${name}/flake.nix");
     in m.outputs {
       inherit nixpkgs;
-      nix-scout = self;
+      nix-scout = nixScout;
       systemRebuild = true;
     }
   ) scoutDirs;
@@ -51,14 +57,14 @@ let
     if !(out ? flakelets) then acc
     else
       let
-        settingsFile = modulesDir + "/${name}/settings.nix";
+        settingsFile = evalModulesDir + "/${name}/settings.nix";
         meta = if builtins.pathExists settingsFile
           then import settingsFile { inherit config lib; }
           else throw "nix-scout: scout-module '${name}' exports flakelets but has no settings.nix — add settings.nix with { enable, output?, settings, autoUpdate? }";
       in
       acc // lib.optionalAttrs meta.enable {
         ${name} = {
-          flake  = "path:${modulesDir}/${name}";
+          flake  = "path:${runtimeModulesDir}/${name}";
           output = meta.output or "flakelets.default";
           settings = meta.settings or {};
         } // lib.optionalAttrs (meta ? autoUpdate) {
@@ -76,7 +82,7 @@ in
 
   imports = [ flakelet.nixosModules.flakelet ];
 
-  nixpkgs.overlays = [ self.overlays.default ];
+  nixpkgs.overlays = [ nixScout.overlays.default ];
 
   environment.systemPackages = prebuiltModules;
 
@@ -111,7 +117,7 @@ in
       install -d -m755 /var/lib/nix-scout
       cat > /var/lib/nix-scout/paths <<EOF
       NIX_SCOUT_PARENT=${parent}
-      NIX_SCOUT_MODULES=${modulesDir}
+      NIX_SCOUT_MODULES=${runtimeModulesDir}
       EOF
       chmod 644 /var/lib/nix-scout/paths
     '';
