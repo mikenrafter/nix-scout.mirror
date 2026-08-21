@@ -33,7 +33,7 @@ copy_new_gen() {
     # Follow source if the home-files entry is a symlink into the store.
     cp --force "$src" "$dest"
     chmod u+w "$dest"
-  done < <(find "$files" \( -type f -o -type l \) -print0)
+  done < <(find -L "$files" -type f -print0)
 }
 
 cleanup_vanished() {
@@ -52,7 +52,7 @@ cleanup_vanished() {
     fi
     # Remove even when $HOME/$P is a regular copy, not a *-home-manager-files/* symlink.
     rm -f "$dest"
-  done < <(find "$old_files" \( -type f -o -type l \) -print0)
+  done < <(find -L "$old_files" -type f -print0)
 }
 
 copy_new_gen
