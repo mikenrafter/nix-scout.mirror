@@ -20,6 +20,16 @@ copy_new_gen() {
     dest="$HOME/$rel"
     mkdir -p "$(dirname "$dest")"
 
+    # systemd unit files (and .wants/.requires dropins) must stay real
+    # symlinks: systemd refuses to honor a Wants= dropin that isn't one
+    # ("is not a symlink, ignoring"), which silently drops the unit from
+    # graphical-session.target. Nothing under here needs in-place edits
+    # the way DMS's settings.json does, so plain linkGeneration is fine.
+    if [[ "$rel" == .config/systemd/user/* ]]; then
+      link_unit "$src" "$dest"
+      continue
+    fi
+
     if [[ -e "$dest" || -L "$dest" ]]; then
       if ! cmp -s "$src" "$dest" 2>/dev/null; then
         diff -u "$dest" "$src" || true
@@ -34,6 +44,17 @@ copy_new_gen() {
     cp --force "$src" "$dest"
     chmod u+w "$dest"
   done < <(find -L "$files" -type f -print0)
+}
+
+link_unit() {
+  local src="$1" dest="$2"
+  local target
+  target="$(readlink -f "$src")"
+  if [[ -L "$dest" && "$(readlink "$dest")" == "$target" ]]; then
+    return 0
+  fi
+  rm -f "$dest"
+  ln -s "$target" "$dest"
 }
 
 cleanup_vanished() {

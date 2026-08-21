@@ -189,4 +189,40 @@ else
   fail "directory-valued entry content mismatch: $(printf %q "$got")"
 fi
 
+echo "-- regression: systemd/user unit + .wants dropin stay symlinks --"
+# cp-ing these breaks systemd: a .wants/ dropin that isn't a real symlink is
+# rejected ("is not a symlink, ignoring"), so the unit never gets pulled in
+# by graphical-session.target. Everything else still gets copied as before.
+
+GEN_D_STORE="$WORKDIR/gen-d-store"
+GEN_D="$WORKDIR/new-gen-d"
+
+"$MKDIR" -p \
+  "$GEN_D_STORE/.config/systemd/user/graphical-session.target.wants" \
+  "$GEN_D_STORE/.config/DankMaterialShell" \
+  "$GEN_D"
+printf '[Service]\nExecStart=/nix/store/xxx/bin/dms\n' >"$GEN_D_STORE/.config/systemd/user/dms.service"
+ln -s "$GEN_D_STORE/.config/systemd/user/dms.service" \
+  "$GEN_D_STORE/.config/systemd/user/graphical-session.target.wants/dms.service"
+printf '%s\n' '{"theme":"delta"}' >"$GEN_D_STORE/.config/DankMaterialShell/settings.json"
+ln -s "$GEN_D_STORE" "$GEN_D/home-files"
+
+run_activator "$GEN_D" ""
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "activator exit 0 with systemd/user units present"
+else
+  fail "activator failed on systemd/user layout (rc=$CAPTURED_RC err=$(printf %q "$CAPTURED_ERR"))"
+fi
+
+UNIT="$HOME/.config/systemd/user/dms.service"
+WANTS_DROPIN="$HOME/.config/systemd/user/graphical-session.target.wants/dms.service"
+UNIT_STORE_TARGET="$("$READLINK" -f "$GEN_D_STORE/.config/systemd/user/dms.service")"
+
+assert_symlink_to "$UNIT" "$UNIT_STORE_TARGET" "unit file is a symlink, not a copy"
+assert_symlink_to "$WANTS_DROPIN" "$UNIT_STORE_TARGET" ".wants dropin is a symlink, not a copy"
+
+# Non-systemd files in the same generation are unaffected.
+assert_regular_writable_file "$HOME/.config/DankMaterialShell/settings.json" \
+  "settings.json still copied (unaffected by systemd/user carve-out)"
+
 finish_suite

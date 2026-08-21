@@ -257,6 +257,25 @@ assert_regular_writable_file() {
   pass "$label (regular writable file)"
 }
 
+assert_symlink_to() {
+  local path="$1" want_target="$2" label="$3"
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    fail "$label: missing $path"
+    return
+  fi
+  if [[ ! -L "$path" ]]; then
+    fail "$label: $path is a regular file — want a symlink to $want_target"
+    return
+  fi
+  local got
+  got="$("$READLINK" -f "$path")"
+  if [[ "$got" != "$want_target" ]]; then
+    fail "$label: $path -> $got, want $want_target"
+    return
+  fi
+  pass "$label (symlink to store)"
+}
+
 finish_suite() {
   echo
   if [[ "$failures" -eq 0 ]]; then
