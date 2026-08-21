@@ -17,7 +17,12 @@ echo "nix-scout: installed profile scout $NAME from $STORE"
 
 FISH_CONF="${XDG_CONFIG_HOME:-${HOME:-~}/.config}/fish/conf.d/nix-scout.fish"
 mkdir -p "$(dirname "$FISH_CONF")"
-_fish_content="$(printf '# managed by nix-scout switch — do not edit manually\nfish_add_path -m %s/bin\n' "$PROFILE")"
+# Prepend scout vendor_completions.d so fish loads profile completions before
+# the (often stale) /run/current-system/sw copy — buildEnv already links /share.
+_fish_content="$(printf '%s\n' \
+  '# managed by nix-scout switch — do not edit manually' \
+  "fish_add_path -m ${PROFILE}/bin" \
+  "set -g fish_complete_path ${PROFILE}/share/fish/vendor_completions.d \$fish_complete_path")"
 if [[ "$(id -u)" -eq 0 ]]; then
   printf '%s\n' "$_fish_content" | install -m644 -o "$USER" /dev/stdin "$FISH_CONF"
 else

@@ -347,7 +347,11 @@ garbage collected.
 .I $XDG_CONFIG_HOME/fish/conf.d/nix\-scout.fish
 Written after a successful profile\-mode install so the scout profile bin is on
 .B PATH
-in new Fish sessions.
+and the profile\(aqs
+.I share/fish/vendor_completions.d
+is prepended to
+.B fish_complete_path
+(so switch\-installed completions win over a stale system copy).
 Removed by
 .BR "nix\-scout clear" .
 Do not edit manually.
