@@ -64,6 +64,22 @@
       };
     };
 
+    # Run static (grep-only) contract checks without building the package.
+    # Integration suites (cli, hm-activate-files, materialize, profile-gcroots)
+    # require the binary and are run manually via tests/run.sh or ns-test.
+    # Static (grep-only) contract checks — no binary build required.
+    # Integration suites need the built binary; run those via tests/run.sh or ns-test.
+    checks.${system}.static-contracts = pkgs.runCommand "nix-scout-static-contracts"
+      { buildInputs = [ pkgs.bash pkgs.gnugrep pkgs.coreutils pkgs.findutils pkgs.diffutils ]; }
+      ''
+        export NIX_SCOUT_ROOT=${./.}
+        bash ${./tests/module-mode.sh}
+        bash ${./tests/path-session.sh}
+        bash ${./tests/activation-clear.sh}
+        bash ${./tests/flakelet.sh}
+        touch $out
+      '';
+
     devShells.${system}.default = pkgs.mkShell {
       packages = with pkgs; [
         nix
