@@ -1,9 +1,9 @@
-{ nixScout, nixpkgs, parent, modulesRel, flakelet }:
+{ nixScout, parent, modulesRel, flakelet, inputs }:
 
 # nix-scout host framework — PATH, profile, HM copy-activator, clear-on-activation.
 # Scout payload modules live under ${parent}/${modulesRel} and are switched at runtime.
 #
-# Constructor: nixosModule parent modulesRel
+# Constructor: nixosModule parent modulesRel hostInputs
 # Runtime paths: /var/lib/nix-scout/paths (written on activation).
 # Exposes pkgs.nix-scout via nixpkgs.overlays.default for scout-module flakes.
 #
@@ -32,56 +32,28 @@ let
     v == "directory" && builtins.pathExists (evalModulesDir + "/${name}/flake.nix")
   ) (builtins.readDir evalModulesDir);
 
-  # Inputs nix-scout provides to every scout-module outputs function at nixos-rebuild time.
-  # Flakelet does not thread the parent flake's locked inputs through to path: evaluations,
-  # so external inputs (e.g. llm-agents) are unavailable here even if declared in the
-  # module's flake.nix inputs block.
-  #
-  # Upstream flakelet enhancement opportunity: flakelet could accept an `extraInputs` attr
-  # in the service definition and forward them to the path: flake evaluation, allowing
-  # scout modules to receive parent-pinned inputs at both rebuild and runtime.
-  providedOutputsArgs = {
-    nixpkgs = true; nix-scout = true; systemRebuild = true;
-  };
-
   # Evaluate each scout-module's flake outputs (systemRebuild=true context).
+  #
+  # `inputs` is the parent flake's own full, already-resolved `inputs` attrset
+  # (threaded through from the nixosModule constructor), merged with
+  # `nix-scout`/`systemRebuild` markers. This is deliberately the *same* value
+  # a module's own declared inputs would resolve to via a real `nix build`
+  # against a parent-lock-derived flake.lock (see materialize-module.sh) —
+  # any top-level parent input (nixpkgs, llm-agents, nix-scout, ...) is
+  # available here by name with no per-module opt-in, so eval-time
+  # (nixos-rebuild) and switch-time (`nix-scout switch`) resolve identically
+  # for anything the module actually declares.
+  #
+  # `inputs ? nix-scout` is what a scout-module's outputs function should use
+  # to distinguish this call (or a real `nix build` against a module that
+  # declares `inputs.nix-scout`) from flakelet's own runtime evaluation,
+  # which never provides `nix-scout` — see the module-authoring convention
+  # documented in scout-modules/*/flake.nix.
   scoutOutputs = lib.mapAttrs (name: _:
     let
       m = import (evalModulesDir + "/${name}/flake.nix");
-      # Detect required args (non-defaulted) that nix-scout cannot supply.
-      # functionArgs returns { argName = hasDefault; }; false = required.
-      requiredArgs     = lib.filterAttrs (_: hasDefault: !hasDefault) (builtins.functionArgs m.outputs);
-      unsatisfied      = lib.filterAttrs (k: _: !(providedOutputsArgs ? ${k})) requiredArgs;
-      unsatisfiedNames = lib.attrNames unsatisfied;
     in
-    if unsatisfied != {} then throw ''
-      nix-scout: scout-module '${name}' requires flake inputs that nix-scout cannot
-      provide at nixos-rebuild eval time: ${lib.concatStringsSep ", " unsatisfiedNames}
-
-      nix-scout passes only: ${lib.concatStringsSep ", " (lib.attrNames providedOutputsArgs)}
-
-      Flakelet does not forward the parent flake's locked inputs to path: evaluations,
-      so external inputs are unavailable during systemRebuild. To make an input optional,
-      use @inputs and guard with `inputs ? <name>`:
-
-        outputs = { nixpkgs, ... }@inputs:
-        let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {
-          packages.x86_64-linux.scout =
-            if inputs ? ${lib.head unsatisfiedNames}
-            then inputs.${lib.head unsatisfiedNames}.packages.x86_64-linux.my-pkg
-            else pkgs.runCommand "empty" {} "mkdir $out";
-          ...
-        }
-
-      When llm-agents (or another input) IS available — e.g. via a top-level `nix build`
-      or a future flakelet extraInputs feature — the real package is used; otherwise the
-      empty fallback keeps the rebuild green and the real binary comes from systemPackages.
-    ''
-    else m.outputs {
-      inherit nixpkgs;
-      nix-scout = nixScout;
-      systemRebuild = true;
-    }
+      m.outputs (inputs // { nix-scout = nixScout; systemRebuild = true; })
   ) scoutDirs;
 
   # Prebuild only modules that expose packages.<system>.scout.

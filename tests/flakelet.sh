@@ -151,6 +151,51 @@ else
   fail "nixos-module.nix not found at $NS_MODULE"
 fi
 
+# ── nixos-module.nix: scout-module input threading (converged eval/switch) ──
+echo "-- nixos-module.nix: threads parent inputs into scout-module eval --"
+if [[ -f "$NS_MODULE" ]]; then
+  if "$GREP" -q 'providedOutputsArgs' "$NS_MODULE"; then
+    fail "nixos-module.nix must not hardcode a fixed providedOutputsArgs set — pass through the parent's own inputs instead"
+  else
+    pass "nixos-module.nix does not hardcode a fixed providedOutputsArgs set"
+  fi
+  if "$GREP" -q 'unsatisfiedNames\|requiredArgs' "$NS_MODULE"; then
+    fail "nixos-module.nix must not throw on 'unsatisfied' required args — every module now receives the full parent inputs attrset"
+  else
+    pass "nixos-module.nix does not throw on unsatisfied required args"
+  fi
+  if "$GREP" -q 'm\.outputs (inputs //' "$NS_MODULE"; then
+    pass "nixos-module.nix calls m.outputs with the parent's inputs merged in"
+  else
+    fail "nixos-module.nix must call m.outputs (inputs // { nix-scout = ...; systemRebuild = true; }) so eval-time and switch-time converge"
+  fi
+  if "$GREP" -q '{ nixScout, parent, modulesRel, flakelet, inputs }' "$NS_MODULE"; then
+    pass "nixos-module.nix constructor accepts the host's inputs attrset"
+  else
+    fail "nixos-module.nix constructor must accept 'inputs' (the host flake's own resolved inputs)"
+  fi
+else
+  fail "nixos-module.nix not found at $NS_MODULE"
+fi
+
+# ── flake.nix: nixosModule threads hostInputs through ───────────────────────
+echo "-- flake.nix: nixosModule constructor forwards hostInputs --"
+NS_FLAKE="$REPO/flake.nix"
+if [[ -f "$NS_FLAKE" ]]; then
+  if "$GREP" -q 'nixosModule = parent: modulesRel: hostInputs:' "$NS_FLAKE"; then
+    pass "flake.nix's nixosModule takes parent, modulesRel, and hostInputs"
+  else
+    fail "flake.nix's nixosModule must be a 3-arg curried function: parent modulesRel hostInputs"
+  fi
+  if "$GREP" -q 'inputs = hostInputs' "$NS_FLAKE"; then
+    pass "flake.nix forwards hostInputs into nixos-module.nix as 'inputs'"
+  else
+    fail "flake.nix must forward hostInputs into nixos-module.nix's 'inputs' arg"
+  fi
+else
+  fail "flake.nix not found at $NS_FLAKE"
+fi
+
 # ── flakelet-access.sh: primary-gid-only grant/check ───────────────────────
 echo "-- flakelet-access.sh: grant/check contracts --"
 ACCESS_SCRIPT="$REPO/lib/flakelet-access.sh"

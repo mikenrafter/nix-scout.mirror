@@ -27,12 +27,18 @@
 
     # parent: live filesystem path to the host flake root.
     # modulesRel: directory under parent that contains <name>/flake.nix drop-ins.
-    nixosModule = parent: modulesRel: {
+    # hostInputs: the host (parent) flake's own full, already-resolved `inputs`
+    # attrset — threaded through to scout-module eval-time calls so a module's
+    # declared inputs (nixpkgs, nix-scout, or anything else the host also
+    # declares at top level) resolve identically to what a real `nix build`
+    # against the parent-lock-derived flake.lock would give at switch time.
+    nixosModule = parent: modulesRel: hostInputs: {
       _file = toString ./nixos-module.nix;
       imports = [
         (import ./nixos-module.nix {
           nixScout = self;
-          inherit nixpkgs parent modulesRel flakelet;
+          inherit parent modulesRel flakelet;
+          inputs = hostInputs;
         })
       ];
     };
