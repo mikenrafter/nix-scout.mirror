@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Flakelet integration contracts (v3):
-#   - apply-output.sh delegates to apply-hm.sh / apply-env.sh (split scripts exist)
-#   - apply-output.sh has no early exit 0 after home-files
-#   - apply-flakelet.sh exists in lib/
-#   - CLI _switch_module fan-out: uses apply-flakelet.sh, tracks switch_rc
+# Flakelet integration contracts:
+#   - scout-lib.sh exists and provides pin_gcroot
+#   - apply-hm.sh / apply-env.sh self-detect and exit 0 when facet is absent
+#   - apply-flakelet.sh self-detects via flake.nix grep and exit 0 when absent
+#   - CLI _switch_module flat fan-out: pin_gcroot + apply-hm + apply-env + apply-flakelet
 #   - nixos-module.nix imports flakelet and auto-registers via settings.nix
 #
 # Run from nix-scout root:
@@ -15,44 +15,66 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
 
 echo "== flakelet integration =="
 
-# ── lib/ split scripts exist ─────────────────────────────────────────────────
-echo "-- lib/: apply-hm.sh, apply-env.sh, apply-flakelet.sh exist --"
-for script in apply-hm.sh apply-env.sh apply-flakelet.sh; do
+# ── lib/ scripts exist ────────────────────────────────────────────────────────
+echo "-- lib/: scout-lib.sh, apply-hm.sh, apply-env.sh, apply-flakelet.sh exist --"
+for script in scout-lib.sh apply-hm.sh apply-env.sh apply-flakelet.sh; do
   cand="$REPO/lib/$script"
   if [[ -f "$cand" ]]; then
     pass "lib/$script exists"
   else
-    fail "lib/$script missing — apply-output.sh should be split into sub-scripts"
+    fail "lib/$script missing"
   fi
 done
 
-# ── apply-output.sh: orchestrator, calls sub-scripts, no early exit 0 ────────
-echo "-- apply-output.sh: orchestrates sub-scripts, non-exclusive --"
-APPLY=""
-if APPLY="$(resolve_apply_output_script)"; then
-  if "$GREP" -q 'exit 0' "$APPLY"; then
-    fail "apply-output.sh still has early 'exit 0' — must be non-exclusive"
-  else
-    pass "apply-output.sh has no early exit 0"
-  fi
-  if "$GREP" -q 'apply-hm\.sh' "$APPLY" && "$GREP" -q 'apply-env\.sh' "$APPLY"; then
-    pass "apply-output.sh delegates to apply-hm.sh and apply-env.sh"
-  else
-    fail "apply-output.sh must call apply-hm.sh and apply-env.sh"
-  fi
-  if "$GREP" -qE 'rc=0|rc=\$\?' "$APPLY"; then
-    pass "apply-output.sh tracks aggregated rc (non-atomic error handling)"
-  else
-    fail "apply-output.sh must aggregate rc from sub-scripts"
-  fi
+# ── scout-lib.sh: provides shared primitives ──────────────────────────────────
+echo "-- scout-lib.sh: provides pin_gcroot and priv helpers --"
+SCOUT_LIB=""
+if SCOUT_LIB="$(resolve_scout_lib_script)"; then
+  for fn in pin_gcroot _can_write _priv_mkdir _priv_ln_sfn _priv_nix_env; do
+    if "$GREP" -q "$fn" "$SCOUT_LIB"; then
+      pass "scout-lib.sh defines $fn"
+    else
+      fail "scout-lib.sh must define $fn"
+    fi
+  done
 else
-  fail "apply-output.sh not found (resolve_apply_output_script failed)"
+  fail "scout-lib.sh not found (resolve_scout_lib_script failed)"
 fi
 
-# ── apply-flakelet.sh: calls flakelet update ─────────────────────────────────
-echo "-- apply-flakelet.sh: calls flakelet update --"
+# ── apply-hm.sh / apply-env.sh: self-detect, no hard exit 1 on absent facet ──
+echo "-- apply-hm.sh / apply-env.sh: self-detect (exit 0 when facet absent) --"
+for script in apply-hm.sh apply-env.sh; do
+  cand="$REPO/lib/$script"
+  if [[ -f "$cand" ]]; then
+    if "$GREP" -q 'exit 0' "$cand"; then
+      pass "lib/$script has exit 0 self-detection path"
+    else
+      fail "lib/$script must exit 0 (no-op) when its store facet is absent"
+    fi
+    if "$GREP" -q 'scout-lib\.sh' "$cand"; then
+      pass "lib/$script sources scout-lib.sh"
+    else
+      fail "lib/$script must source scout-lib.sh"
+    fi
+  else
+    fail "lib/$script not found"
+  fi
+done
+
+# ── apply-flakelet.sh: self-detects via flake.nix grep, calls flakelet update ─
+echo "-- apply-flakelet.sh: self-detect + MOD_DIR arg + flakelet update --"
 FLAKELET_SCRIPT="$REPO/lib/apply-flakelet.sh"
 if [[ -f "$FLAKELET_SCRIPT" ]]; then
+  if "$GREP" -q 'MOD_DIR' "$FLAKELET_SCRIPT"; then
+    pass "apply-flakelet.sh accepts MOD_DIR argument"
+  else
+    fail "apply-flakelet.sh must accept MOD_DIR as second argument for self-detection"
+  fi
+  if "$GREP" -q 'exit 0' "$FLAKELET_SCRIPT"; then
+    pass "apply-flakelet.sh exits 0 when module has no flakelet facet"
+  else
+    fail "apply-flakelet.sh must exit 0 (no-op) when flake.nix has no flakelets"
+  fi
   if "$GREP" -q 'flakelet update' "$FLAKELET_SCRIPT"; then
     pass "apply-flakelet.sh calls 'flakelet update'"
   else
@@ -62,10 +84,15 @@ else
   fail "apply-flakelet.sh not found at $FLAKELET_SCRIPT"
 fi
 
-# ── CLI: _switch_module uses apply-flakelet.sh, tracks switch_rc ─────────────
-echo "-- CLI: _switch_module non-atomic error handling --"
+# ── CLI: _switch_module flat fan-out ─────────────────────────────────────────
+echo "-- CLI: _switch_module flat fan-out with pin_gcroot --"
 BIN=""
 if BIN="$(resolve_strict_nix_scout)"; then
+  if "$GREP" -q 'pin_gcroot' "$BIN"; then
+    pass "bin/nix-scout calls pin_gcroot"
+  else
+    fail "bin/nix-scout must call pin_gcroot after a successful nix build"
+  fi
   if "$GREP" -q 'apply-flakelet\.sh\|apply_flakelet' "$BIN"; then
     pass "bin/nix-scout references apply-flakelet.sh"
   else

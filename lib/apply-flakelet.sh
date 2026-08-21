@@ -3,6 +3,9 @@
 set -euo pipefail
 
 NAME="${1:?module name required}"
+MOD_DIR="${2:?module directory required}"
+
+grep -q 'flakelets' "$MOD_DIR/flake.nix" 2>/dev/null || exit 0
 
 echo "nix-scout: flakelet update $NAME" >&2
 if ! sudo flakelet update "$NAME"; then

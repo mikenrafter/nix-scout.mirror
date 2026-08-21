@@ -26,6 +26,9 @@ _scout_lib() {
   return 1
 }
 
+# shellcheck source=../lib/scout-lib.sh
+source "$(_scout_lib scout-lib.sh)"
+
 _SCOUT_PATHS_MISSING_MSG="nix-scout: \${NIX_SCOUT_PATHS_FILE} is missing — install the nix-scout NixOS module (inputs.nix-scout.nixosModule <parent> <modulesRel>) and rebuild"
 
 _load_paths_file() {
@@ -62,45 +65,6 @@ _require_user() {
   fi
 }
 
-# Returns true if the current user can write to path (walks up to first existing ancestor).
-_can_write() {
-  local check="$1"
-  while [[ "$check" != "/" && ! -e "$check" ]]; do
-    check="$(dirname "$check")"
-  done
-  [[ -w "$check" ]]
-}
-
-_priv_mkdir() {
-  local dir="$1"
-  if _can_write "$dir"; then
-    mkdir -p "$dir"
-  else
-    echo "nix-scout: need elevated permissions to create $dir" >&2
-    sudo mkdir -p "$dir"
-  fi
-}
-
-_priv_ln_sfn() {
-  local target="$1" link="$2"
-  if [[ -w "$(dirname "$link")" ]]; then
-    ln -sfn "$target" "$link"
-  else
-    echo "nix-scout: need elevated permissions to link $link" >&2
-    sudo ln -sfn "$target" "$link"
-  fi
-}
-
-_priv_nix_env() {
-  local profile="$1" store="$2"
-  if _can_write "$profile"; then
-    nix-env -p "$profile" -i "$store"
-  else
-    echo "nix-scout: need elevated permissions for nix-env profile $profile" >&2
-    sudo nix-env -p "$profile" -i "$store"
-  fi
-}
-
 usage() {
   cat <<EOF
 nix-scout — scout module switcher
@@ -121,7 +85,7 @@ Facets: a scout module may export any combination of:
   home-files  packages.<system>.scout with home-files/ — files copied into \$HOME
   flakelet    flakelets.<attr> — registered with flakelet on rebuild; updated on switch
 
-  switch fan-out: package facet is built+applied; flakelet facet delegates to lib/apply-flakelet.sh.
+  switch fan-out: each facet script self-detects and no-ops if its output is absent.
   The flakelet entry must exist in /etc/flakelet.json (populated by nixos-rebuild).
   If the entry is missing: rebuild once to register, then retry nix-scout switch.
 
@@ -173,8 +137,8 @@ _switch_module() {
   local name="$1"
   shift
   local nix_extra=("$@")
-  local modules mod_dir mat mat_script apply_script flakelet_script store_path err_log
-  local has_scout=false has_flakelet=false applied=false switch_rc=0
+  local modules mod_dir mat store_path err_log nix_ok
+  local has_pkg=false has_flt=false switch_rc=0
 
   modules="$(_resolve_modules)"
   mod_dir="$modules/$name"
@@ -183,24 +147,19 @@ _switch_module() {
     exit 1
   fi
 
-  # Probe facets via source heuristic (fast, no nix eval needed).
-  grep -q 'flakelets' "$mod_dir/flake.nix" 2>/dev/null && has_flakelet=true
-  grep -qE '[^#]*(packages\.|\.scout)' "$mod_dir/flake.nix" 2>/dev/null && has_scout=true
+  grep -qE '[^#]*(packages\.|\.scout)' "$mod_dir/flake.nix" 2>/dev/null && has_pkg=true
+  grep -q 'flakelets' "$mod_dir/flake.nix" 2>/dev/null && has_flt=true
 
-  if [[ "$has_scout" != "true" && "$has_flakelet" != "true" ]]; then
+  if [[ "$has_pkg" != "true" && "$has_flt" != "true" ]]; then
     echo "nix-scout: $name/flake.nix has no recognisable facet (packages.*.scout or flakelets.*)" >&2
     exit 1
   fi
 
-  mat_script="$(_scout_lib materialize-module.sh)"
-  apply_script="$(_scout_lib apply-output.sh)"
-  flakelet_script="$(_scout_lib apply-flakelet.sh)"
-
   echo "nix-scout: materialize $name from $mod_dir" >&2
-  mat="$(env NIX_SCOUT_PARENT="$(_resolve_parent)" bash "$mat_script" "$mod_dir")"
+  mat="$(env NIX_SCOUT_PARENT="$(_resolve_parent)" bash "$(_scout_lib materialize-module.sh)" "$mod_dir")"
   mat="${mat%%$'\n'*}"
 
-  if [[ "$has_scout" == "true" ]]; then
+  if [[ "$has_pkg" == "true" ]]; then
     echo "nix-scout: build $mat#scout" >&2
     err_log="$(mktemp)"
     store_path="$(nix build --no-link --print-out-paths --no-write-lock-file \
@@ -210,27 +169,29 @@ _switch_module() {
       "$err_log" >&2 || true
     rm -f "$err_log"
     if [[ "$nix_ok" != "true" ]]; then
-      echo "nix-scout: build failed for $name (continuing to other facets)" >&2
+      echo "nix-scout: build failed for $name" >&2
       switch_rc=1
     else
       store_path="${store_path%%$'\n'*}"
-      applied=true
+      pin_gcroot "$store_path" "$name"
       env HOME="$_SCOUT_HOME" \
         USER="$_SCOUT_USER" \
+        XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-}" \
         NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
-        NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
-        bash "$apply_script" "$store_path" "$name" \
-        || { switch_rc=$?; echo "nix-scout: package apply failed for $name" >&2; }
+        bash "$(_scout_lib apply-hm.sh)" "$store_path" "$name" \
+        || { switch_rc=$?; echo "nix-scout: apply-hm failed for $name" >&2; }
+      env HOME="$_SCOUT_HOME" \
+        USER="$_SCOUT_USER" \
+        XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-}" \
+        NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
+        bash "$(_scout_lib apply-env.sh)" "$store_path" "$name" \
+        || { switch_rc=$?; echo "nix-scout: apply-env failed for $name" >&2; }
     fi
   fi
 
-  if [[ "$has_flakelet" == "true" ]]; then
-    applied=true
-    bash "$flakelet_script" "$name" \
-      || { switch_rc=$?; echo "nix-scout: flakelet apply failed for $name" >&2; }
-  fi
+  bash "$(_scout_lib apply-flakelet.sh)" "$name" "$mod_dir" \
+    || { switch_rc=$?; echo "nix-scout: flakelet apply failed for $name" >&2; }
 
-  [[ "$applied" == "true" ]] || return 1
   return $switch_rc
 }
 

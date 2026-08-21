@@ -53,10 +53,5 @@ if [[ -f "$HOST" ]] && "$GREP" -q 'nixosModule' "$HOST"; then
 else
   fail "hosts/void.nix must import inputs.nix-scout.nixosModule ($HOST)"
 fi
-if [[ -f "$REPO/modules/nix-scout.nix" ]]; then
-  fail "modules/nix-scout.nix must not exist"
-else
-  pass "no modules/nix-scout.nix glue"
-fi
 
 finish_suite

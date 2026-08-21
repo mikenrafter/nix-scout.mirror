@@ -126,9 +126,9 @@ resolve_materialize_script() {
   return 1
 }
 
-resolve_apply_output_script() {
-  local cand="${NIX_SCOUT_ROOT:-$REPO}/lib/apply-output.sh"
-  if [[ -x "$cand" || -f "$cand" ]]; then
+resolve_scout_lib_script() {
+  local cand="${NIX_SCOUT_ROOT:-$REPO}/lib/scout-lib.sh"
+  if [[ -f "$cand" ]]; then
     printf '%s' "$cand"
     return 0
   fi

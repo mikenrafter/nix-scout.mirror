@@ -5,38 +5,10 @@ set -euo pipefail
 STORE="${1:?scout store path required}"
 NAME="${2:-scout}"
 
-_can_write() {
-  local check="$1"
-  while [[ "$check" != "/" && ! -e "$check" ]]; do
-    check="$(dirname "$check")"
-  done
-  [[ -w "$check" ]]
-}
+# shellcheck source=scout-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scout-lib.sh"
 
-_priv_mkdir() {
-  local dir="$1"
-  if _can_write "$dir"; then
-    mkdir -p "$dir"
-  else
-    echo "nix-scout: need elevated permissions to create $dir" >&2
-    sudo mkdir -p "$dir"
-  fi
-}
-
-_priv_nix_env() {
-  local profile="$1" store="$2"
-  if _can_write "$profile"; then
-    nix-env -p "$profile" -i "$store"
-  else
-    echo "nix-scout: need elevated permissions for nix-env profile $profile" >&2
-    sudo nix-env -p "$profile" -i "$store"
-  fi
-}
-
-if [[ ! -d "$STORE/bin" ]]; then
-  echo "nix-scout: apply-env: no bin/ in $STORE" >&2
-  exit 1
-fi
+[[ -d "$STORE/bin" ]] || exit 0
 
 PROFILE="${NIX_SCOUT_PROFILE:-/nix/var/nix/profiles/per-user/${USER}/nix-scout}"
 _priv_mkdir "$(dirname "$PROFILE")"

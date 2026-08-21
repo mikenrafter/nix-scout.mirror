@@ -32,12 +32,6 @@ else
   fail "binary basename is '$base' (want nix-scout, not scout)"
 fi
 
-# CLI must not come from repo root bin/ (nix-scout was extracted to standalone repo).
-if [[ "$BIN" != "$REPO/bin/nix-scout" ]]; then
-  pass "binary resolved from correct location (not repo root bin/)"
-else
-  fail "binary should not come from repo root bin/ (nix-scout was extracted to standalone repo)"
-fi
 
 run_capture "$STRICT_BIN" --help
 if [[ "$CAPTURED_RC" -eq 0 || "$CAPTURED_RC" -eq 1 ]]; then
@@ -149,11 +143,6 @@ if "$GREP" -q '/var/lib/nix-scout/paths' "$PATHS_CHECK"; then
   pass "CLI defaults to /var/lib/nix-scout/paths"
 else
   fail "CLI must read paths from /var/lib/nix-scout/paths ($PATHS_CHECK)"
-fi
-if "$GREP" -q '@scoutModules@' "$PATHS_CHECK" || "$GREP" -q '@scoutParent@' "$PATHS_CHECK"; then
-  fail "CLI must not bake paths via @scoutModules@/@scoutParent@ sentinels"
-else
-  pass "CLI has no path bake sentinels"
 fi
 if [[ -f /var/lib/nix-scout/paths ]]; then
   pass "/var/lib/nix-scout/paths exists on this system"

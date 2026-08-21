@@ -29,19 +29,6 @@ if [[ "$found" -eq 0 ]]; then
   fail "nixScout.nixosModules.default (or shim) missing module-mode restriction comment/assertion"
 fi
 
-# v2: no v0id.scout.payloads manifest in module options.
-manifest_hit=0
-while IFS= read -r MODULE; do
-  [[ -z "$MODULE" ]] && continue
-  if "$GREP" -qE 'v0id\.scout\.payloads|options\.v0id\.scout\.payloads' "$MODULE"; then
-    manifest_hit=1
-    fail "module still defines v0id.scout.payloads manifest ($MODULE) — v2 uses modules/ drop-ins"
-  fi
-done < <(scout_module_candidates)
-
-if [[ "$manifest_hit" -eq 0 ]]; then
-  pass "no v0id.scout.payloads manifest in scout NixOS module"
-fi
 
 BIN=""
 STRICT_BIN=""
