@@ -3,13 +3,18 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    flakelet = {
+      url = "github:Mic92/flakelet";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
   };
 
-  outputs = { self, nixpkgs, home-manager, ... }: let
+  outputs = { self, nixpkgs, home-manager, flakelet, ... }: let
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
     scoutModuleLib = import ./lib/scout-module.nix;
@@ -26,22 +31,25 @@
       _file = toString ./nixos-module.nix;
       imports = [
         (import ./nixos-module.nix {
-          inherit self nixpkgs parent modulesRel;
+          inherit self nixpkgs parent modulesRel flakelet;
         })
       ];
     };
 
     packages.${system}.nix-scout = pkgs.stdenv.mkDerivation {
       pname = "nix-scout";
-      version = "0.3.0";
+      version = "0.4.0";
       src = ./.;
       dontBuild = true;
       installPhase = ''
         runHook preInstall
-        install -Dm755 $src/bin/nix-scout             $out/bin/nix-scout
-        install -Dm755 $src/lib/materialize-module.sh $out/lib/materialize-module.sh
-        install -Dm755 $src/lib/apply-output.sh       $out/lib/apply-output.sh
-        install -Dm755 $src/lib/hm-activate-files.sh  $out/lib/hm-activate-files.sh
+        install -Dm755 $src/bin/nix-scout                $out/bin/nix-scout
+        install -Dm755 $src/lib/materialize-module.sh  $out/lib/materialize-module.sh
+        install -Dm755 $src/lib/apply-output.sh        $out/lib/apply-output.sh
+        install -Dm755 $src/lib/apply-hm.sh            $out/lib/apply-hm.sh
+        install -Dm755 $src/lib/apply-env.sh           $out/lib/apply-env.sh
+        install -Dm755 $src/lib/apply-flakelet.sh      $out/lib/apply-flakelet.sh
+        install -Dm755 $src/lib/hm-activate-files.sh   $out/lib/hm-activate-files.sh
         install -Dm644 $src/share/man/man1/nix-scout.1 \
           $out/share/man/man1/nix-scout.1
         mkdir -p $out/share/fish/vendor_completions.d

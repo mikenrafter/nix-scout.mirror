@@ -1,4 +1,4 @@
-.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.3.0" "User Commands"
+.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.4.0" "User Commands"
 .SH NAME
 nix\-scout \- scout module switcher for NixOS
 .SH SYNOPSIS
@@ -8,13 +8,13 @@ nix\-scout \- scout module switcher for NixOS
 .SH DESCRIPTION
 .B nix\-scout
 materializes, builds, and applies scout modules \(em subflakes under a configured
-modules directory that each export a
-.B .#scout
-output.
-Each module is an isolated Nix flake that installs programs into a dedicated
-per\-user profile or copies home\-files into
-.IR $HOME ,
-without requiring a full
+modules directory.
+Each module may export a
+.B packages.<system>.scout
+output (profile or home\-files facet), a
+.B flakelets
+output (flakelet daemon facet), or both.
+Modules are applied without requiring a full
 .BR nixos\-rebuild (8).
 .PP
 The parent flake\(aqs
@@ -24,27 +24,46 @@ is stamped into each materialized module so all inputs are pinned consistently.
 .TP
 .B list
 List available scout modules found under
-.IR $NIX_SCOUT_MODULES .
+.IR $NIX_SCOUT_MODULES ,
+with facet tags:
+.B profile
+(bin/ output),
+.B home\-files
+(home\-files/ output),
+.B flakelet
+(flakelets.* output).
 Each entry is a directory containing a
 .IR flake.nix .
 .TP
 .BI switch " name"
-Materialize the named module to a temporary directory, build its
-.B packages.<system>.scout
-output, and apply it.
-If the output contains a
+Materialize the named module to a temporary directory and apply all present facets:
+.RS
+.IP \(bu 2
+.B package facet
+(\c
+.IR packages.<system>.scout ):
+built via
+.BR nix\-build (1)
+and applied \(em
 .I bin/
-directory the result is installed into the scout profile via
-.BR nix\-env (1)
-and a Fish
-.I conf.d
-snippet is written so the profile is on
-.B PATH
-in new sessions.
-If the output contains a
+installed into the scout profile,
 .I home\-files/
-directory its contents are copied into
+copied into
 .IR $HOME .
+Both sub\-facets are applied when both are present.
+.IP \(bu 2
+.B flakelet facet
+(\c
+.IR flakelets.* ):
+runs
+.B sudo flakelet update <name>
+to restart the daemon without a full rebuild.
+The flakelet entry must already exist in
+.IR /etc/flakelet.json
+(populated by
+.BR nixos\-rebuild (8)).
+If the entry is missing, rebuild once to register it, then retry.
+.RE
 .TP
 .BI switch " path"
 Install a store path
@@ -54,8 +73,7 @@ or flake installable
 directly into the scout profile without materializing or building a module.
 .TP
 .B status
-Show the active scout profile path, installed programs, and each registered
-gc\-root with its resolved store path.
+Show the active scout profile path, each registered gc\-root, and flakelet service status.
 .TP
 .B clear
 Uninstall all packages from the scout profile, remove gc\-root symlinks, and
@@ -126,20 +144,34 @@ A scout module is a directory under
 .I $NIX_SCOUT_MODULES
 containing a
 .I flake.nix
-that exports
-.BR packages.<system>.scout .
-The output must be one of:
+that may export any combination of:
 .IP \(bu 2
-A derivation with a
+.B packages.<system>.scout
+\(em a derivation with a
 .I bin/
-subdirectory \(em installed into the scout profile via
-.BR nix\-env (1).
-.IP \(bu 2
-A derivation with a
+subdirectory (installed into the scout profile via
+.BR nix\-env (1))
+and/or a
 .I home\-files/
-subdirectory \(em each file is copied verbatim into
-.IR $HOME ,
-preserving the relative path structure.
+subdirectory (each file copied verbatim into
+.IR $HOME ).
+Both sub\-facets are applied when both are present.
+.IP \(bu 2
+.B flakelets.<attr>
+\(em a Mic92 flakelet service function.
+Requires a
+.I settings.nix
+alongside
+.I flake.nix
+that returns
+.BR "{ enable, output?, settings, autoUpdate? }" .
+The nix\-scout NixOS module reads
+.I settings.nix
+at rebuild time and registers the service into
+.B services.flakelets.services
+when
+.B enable
+is true.
 .PP
 Scout modules cannot set system\-wide NixOS options.
 Use the core flake or

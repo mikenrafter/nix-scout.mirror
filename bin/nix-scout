@@ -106,15 +106,24 @@ usage() {
 nix-scout — scout module switcher
 
 Usage:
-  nix-scout list                        List scout modules under \$NIX_SCOUT_MODULES
+  nix-scout list                        List scout modules and their facets
   nix-scout switch <name> [NIX-FLAGS]   Materialize, build, and apply a scout module
   nix-scout switch <path>               Install a store path or flake installable into profile
-  nix-scout status                      Show active scout profile + gc-roots
+  nix-scout status                      Show active scout profile + gc-roots + flakelet status
   nix-scout clear                       Clear scout profile and gc-roots
   nix-scout completions fish            Print Fish shell completions to stdout
 
 NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
 Flags may appear before or after <name>, or after -- for flags that take arguments.
+
+Facets: a scout module may export any combination of:
+  profile     packages.<system>.scout with bin/  — installed into scout nix profile
+  home-files  packages.<system>.scout with home-files/ — files copied into \$HOME
+  flakelet    flakelets.<attr> — registered with flakelet on rebuild; updated on switch
+
+  switch fan-out: package facet is built+applied; flakelet facet delegates to lib/apply-flakelet.sh.
+  The flakelet entry must exist in /etc/flakelet.json (populated by nixos-rebuild).
+  If the entry is missing: rebuild once to register, then retry nix-scout switch.
 
 Environment (paths file: $NIX_SCOUT_PATHS_FILE — written by the nix-scout NixOS module):
   NIX_SCOUT_MODULES   (see paths file)
@@ -123,9 +132,7 @@ Environment (paths file: $NIX_SCOUT_PATHS_FILE — written by the nix-scout NixO
   NIX_SCOUT_PROFILE   $NIX_SCOUT_PROFILE
   NIX_SCOUT_GCROOTS   $NIX_SCOUT_GCROOTS
 
-Scout modules are subflakes under modules/<name>/flake.nix. Each exports .#scout.
-
-Rebuild prebuild passes systemRebuild=true into module outputs; `switch` materializes
+Rebuild prebuild passes systemRebuild=true into module outputs; 'switch' materializes
 scout-context.nix with systemRebuild=false. Modules read mode via nix-scout.lib.readSystemRebuild
 or by importing ./scout-context.nix (see lib/scout-module.nix).
 
@@ -133,8 +140,22 @@ module-mode: scout modules cannot set system-wide NixOS options (use core config
 EOF
 }
 
+_facet_tags() {
+  local dir="$1" flake="$1/flake.nix" tags=""
+  if grep -q 'home-files' "$flake" 2>/dev/null; then
+    tags="${tags:+${tags} }home-files"
+  fi
+  if grep -qE '[^#]*packages\.' "$flake" 2>/dev/null && ! grep -q 'home-files' "$flake" 2>/dev/null; then
+    tags="${tags:+${tags} }profile"
+  fi
+  if grep -q 'flakelets' "$flake" 2>/dev/null; then
+    tags="${tags:+${tags} }flakelet"
+  fi
+  printf '%s' "${tags:-unknown}"
+}
+
 cmd_list() {
-  local modules dir
+  local modules dir name tags
   modules="$(_resolve_modules)"
   if [[ ! -d "$modules" ]]; then
     echo "nix-scout: modules directory missing: $modules" >&2
@@ -142,7 +163,9 @@ cmd_list() {
   fi
   for dir in "$modules"/*; do
     [[ -d "$dir" && -f "$dir/flake.nix" ]] || continue
-    basename "$dir"
+    name="$(basename "$dir")"
+    tags="$(_facet_tags "$dir")"
+    printf '%-20s  [%s]\n' "$name" "$tags"
   done | sort
 }
 
@@ -150,7 +173,8 @@ _switch_module() {
   local name="$1"
   shift
   local nix_extra=("$@")
-  local modules mod_dir mat mat_script apply_script store_path err_log
+  local modules mod_dir mat mat_script apply_script flakelet_script store_path err_log
+  local has_scout=false has_flakelet=false applied=false switch_rc=0
 
   modules="$(_resolve_modules)"
   mod_dir="$modules/$name"
@@ -159,29 +183,55 @@ _switch_module() {
     exit 1
   fi
 
+  # Probe facets via source heuristic (fast, no nix eval needed).
+  grep -q 'flakelets' "$mod_dir/flake.nix" 2>/dev/null && has_flakelet=true
+  grep -qE '[^#]*(packages\.|\.scout)' "$mod_dir/flake.nix" 2>/dev/null && has_scout=true
+
+  if [[ "$has_scout" != "true" && "$has_flakelet" != "true" ]]; then
+    echo "nix-scout: $name/flake.nix has no recognisable facet (packages.*.scout or flakelets.*)" >&2
+    exit 1
+  fi
+
   mat_script="$(_scout_lib materialize-module.sh)"
   apply_script="$(_scout_lib apply-output.sh)"
+  flakelet_script="$(_scout_lib apply-flakelet.sh)"
 
   echo "nix-scout: materialize $name from $mod_dir" >&2
   mat="$(env NIX_SCOUT_PARENT="$(_resolve_parent)" bash "$mat_script" "$mod_dir")"
   mat="${mat%%$'\n'*}"
 
-  echo "nix-scout: build $mat#scout" >&2
-  err_log="$(mktemp)"
-  store_path="$(nix build --no-link --print-out-paths --no-write-lock-file \
-    "${nix_extra[@]}" "$mat#scout" 2>"$err_log")" \
-    && nix_ok=true || nix_ok=false
-  grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '\''|  → )' \
-    "$err_log" >&2 || true
-  rm -f "$err_log"
-  [[ "$nix_ok" == "true" ]] || exit 1
-  store_path="${store_path%%$'\n'*}"
+  if [[ "$has_scout" == "true" ]]; then
+    echo "nix-scout: build $mat#scout" >&2
+    err_log="$(mktemp)"
+    store_path="$(nix build --no-link --print-out-paths --no-write-lock-file \
+      "${nix_extra[@]}" "$mat#scout" 2>"$err_log")" \
+      && nix_ok=true || nix_ok=false
+    grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '\''|  → )' \
+      "$err_log" >&2 || true
+    rm -f "$err_log"
+    if [[ "$nix_ok" != "true" ]]; then
+      echo "nix-scout: build failed for $name (continuing to other facets)" >&2
+      switch_rc=1
+    else
+      store_path="${store_path%%$'\n'*}"
+      applied=true
+      env HOME="$_SCOUT_HOME" \
+        USER="$_SCOUT_USER" \
+        NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
+        NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
+        bash "$apply_script" "$store_path" "$name" \
+        || { switch_rc=$?; echo "nix-scout: package apply failed for $name" >&2; }
+    fi
+  fi
 
-  env HOME="$_SCOUT_HOME" \
-    USER="$_SCOUT_USER" \
-    NIX_SCOUT_PROFILE="$NIX_SCOUT_PROFILE" \
-    NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
-    bash "$apply_script" "$store_path" "$name"
+  if [[ "$has_flakelet" == "true" ]]; then
+    applied=true
+    bash "$flakelet_script" "$name" \
+      || { switch_rc=$?; echo "nix-scout: flakelet apply failed for $name" >&2; }
+  fi
+
+  [[ "$applied" == "true" ]] || return 1
+  return $switch_rc
 }
 
 _switch_path() {
@@ -257,6 +307,13 @@ cmd_status() {
     [[ "$found" -eq 1 ]] || echo "  (none)"
   else
     echo "  (none)"
+  fi
+
+  echo "Flakelet Services:"
+  if command -v flakelet >/dev/null 2>&1; then
+    flakelet status 2>/dev/null || echo "  (flakelet status unavailable)"
+  else
+    echo "  (flakelet not on PATH)"
   fi
 }
 

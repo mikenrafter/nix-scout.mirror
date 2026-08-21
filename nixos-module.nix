@@ -1,4 +1,4 @@
-{ self, nixpkgs, parent, modulesRel }:
+{ self, nixpkgs, parent, modulesRel, flakelet }:
 
 # nix-scout host framework — PATH, profile, HM copy-activator, clear-on-activation.
 # Scout payload modules live under ${parent}/${modulesRel} and are switched at runtime.
@@ -6,6 +6,14 @@
 # Constructor: nixosModule parent modulesRel
 # Runtime paths: /var/lib/nix-scout/paths (written on activation).
 # Exposes pkgs.nix-scout via nixpkgs.overlays.default for scout-module flakes.
+#
+# Facets per scout-module:
+#   packages.<system>.scout  — optional; installed into systemPackages on rebuild.
+#   flakelets.<attr>         — optional; requires settings.nix; registered with flakelet.
+# A module may export both facets or only one.
+# Missing settings.nix when flakelets is present is a hard eval error.
+#
+# module-mode: scout modules cannot set system-wide NixOS options (use core config).
 
 { config, lib, pkgs, ... }:
 
@@ -18,16 +26,46 @@ let
     v == "directory" && builtins.pathExists (modulesDir + "/${name}/flake.nix")
   ) (builtins.readDir modulesDir);
 
-  prebuiltModules = lib.mapAttrsToList (name: _:
-    let
-      m = import (modulesDir + "/${name}/flake.nix");
-      out = m.outputs {
-        inherit nixpkgs;
-        nix-scout = self;
-        systemRebuild = true;
-      };
-    in out.packages.${pkgs.system}.scout
+  # Evaluate each scout-module's flake outputs (systemRebuild=true context).
+  scoutOutputs = lib.mapAttrs (name: _:
+    let m = import (modulesDir + "/${name}/flake.nix");
+    in m.outputs {
+      inherit nixpkgs;
+      nix-scout = self;
+      systemRebuild = true;
+    }
   ) scoutDirs;
+
+  # Prebuild only modules that expose packages.<system>.scout.
+  prebuiltModules = lib.mapAttrsToList (_: out: out.packages.${pkgs.system}.scout) (
+    lib.filterAttrs (_: out:
+      (out ? packages)
+      && (out.packages ? ${pkgs.system})
+      && (out.packages.${pkgs.system} ? scout)
+    ) scoutOutputs
+  );
+
+  # Import settings.nix for each module that exports flakelets and build the
+  # services.flakelets.services attrset.  Missing settings.nix is a hard error.
+  flakeletServices = lib.foldlAttrs (acc: name: out:
+    if !(out ? flakelets) then acc
+    else
+      let
+        settingsFile = modulesDir + "/${name}/settings.nix";
+        meta = if builtins.pathExists settingsFile
+          then import settingsFile { inherit config lib; }
+          else throw "nix-scout: scout-module '${name}' exports flakelets but has no settings.nix — add settings.nix with { enable, output?, settings, autoUpdate? }";
+      in
+      acc // lib.optionalAttrs meta.enable {
+        ${name} = {
+          flake  = "path:${modulesDir}/${name}";
+          output = meta.output or "flakelets.default";
+          settings = meta.settings or {};
+        } // lib.optionalAttrs (meta ? autoUpdate) {
+          autoUpdate = meta.autoUpdate;
+        };
+      }
+  ) {} scoutOutputs;
 
   normalUserNames = lib.attrNames (lib.filterAttrs (_: u: u.isNormalUser) config.users.users);
 
@@ -36,9 +74,16 @@ in
 {
   _file = toString ./nixos-module.nix;
 
+  imports = [ flakelet.nixosModules.flakelet ];
+
   nixpkgs.overlays = [ self.overlays.default ];
 
   environment.systemPackages = prebuiltModules;
+
+  services.flakelets = {
+    enable = true;
+    services = flakeletServices;
+  };
 
   home-manager.sharedModules = lib.mkForce [
     ({ config, lib, ... }: {
