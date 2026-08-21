@@ -142,4 +142,51 @@ else
   fail "nested file from generation B missing"
 fi
 
+echo "-- regression: home-files symlink + directory-valued entry (real HM layout) --"
+# Real Home Manager generations never contain a home-files *directory* —
+# home-files is itself a symlink to a store path (fixed in commit bf04afc),
+# and a home.file entry sourced from a directory (e.g. programs.fish's
+# generated_completions) is represented as a *single* symlink to a store
+# directory, not one symlink per file inside it (fixed in commit 7fc93db).
+# find's type filter previously matched each symlink itself instead of
+# descending through it, so `cp --force` hit a bare directory and aborted
+# activation under set -e. Both shapes are reproduced here so a third
+# variant of this bug fails loudly instead of slipping past the suite.
+
+GEN_C_STORE="$WORKDIR/gen-c-store"
+GEN_C="$WORKDIR/new-gen-c"
+FISH_COMPLETIONS_STORE="$WORKDIR/fish-completions-store"
+
+"$MKDIR" -p \
+  "$GEN_C_STORE/.config/DankMaterialShell" \
+  "$GEN_C_STORE/.local/share/fish/home-manager" \
+  "$FISH_COMPLETIONS_STORE" \
+  "$GEN_C"
+printf '%s\n' '{"theme":"gamma"}' >"$GEN_C_STORE/.config/DankMaterialShell/settings.json"
+printf 'complete -c foo\n' >"$FISH_COMPLETIONS_STORE/foo.fish"
+# Directory-sourced home.file entry: HM symlinks the whole dir as one leaf.
+ln -s "$FISH_COMPLETIONS_STORE" "$GEN_C_STORE/.local/share/fish/home-manager/generated_completions"
+# home-files itself is a symlink to the generation's store path, not a real dir.
+ln -s "$GEN_C_STORE" "$GEN_C/home-files"
+
+run_activator "$GEN_C" ""
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "activator exit 0 with home-files symlink + directory-valued entry"
+else
+  fail "activator failed on symlinked home-files layout (rc=$CAPTURED_RC err=$(printf %q "$CAPTURED_ERR"))"
+fi
+
+GEN_C_SETTINGS="$HOME/.config/DankMaterialShell/settings.json"
+GEN_C_COMPLETION="$HOME/.local/share/fish/home-manager/generated_completions/foo.fish"
+
+assert_regular_writable_file "$GEN_C_SETTINGS" "settings.json copied through home-files symlink"
+assert_regular_writable_file "$GEN_C_COMPLETION" "file inside directory-valued home.file entry copied"
+
+got="$("$CAT" "$GEN_C_COMPLETION" 2>/dev/null || true)"
+if [[ "$got" == 'complete -c foo' || "$got" == $'complete -c foo\n' ]]; then
+  pass "directory-valued entry content matches source"
+else
+  fail "directory-valued entry content mismatch: $(printf %q "$got")"
+fi
+
 finish_suite
