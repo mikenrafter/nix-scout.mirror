@@ -125,7 +125,7 @@ in
       programs.fish.interactiveShellInit = lib.mkAfter ''
         fish_add_path -m ${scoutBin config.home.username}
       '';
-      programs.bash.interactiveShellInit = lib.mkAfter ''
+      programs.bash.initExtra = lib.mkAfter ''
         [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash" ]] && \
           source "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash"
       '';
