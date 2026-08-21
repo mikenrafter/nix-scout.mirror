@@ -9,6 +9,10 @@ set -euo pipefail
 copy_new_gen() {
   local files="$newGenPath/home-files"
   [[ -d "$files" ]] || return 0
+  # home-files is a symlink to the real store directory; find(1) does not
+  # descend through a symlink given as its root argument, so resolve it
+  # first or every call below sees only the symlink itself.
+  files="$(readlink -f "$files")"
 
   local src rel dest
   while IFS= read -r -d '' src; do
@@ -37,6 +41,7 @@ cleanup_vanished() {
   local old_files="$old/home-files"
   local new_files="$newGenPath/home-files"
   [[ -n "$old" && -d "$old_files" ]] || return 0
+  old_files="$(readlink -f "$old_files")"
 
   local src rel dest
   while IFS= read -r -d '' src; do
