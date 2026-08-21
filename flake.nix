@@ -64,6 +64,13 @@
         mkdir -p $out/share/fish/vendor_completions.d
         bash $out/bin/nix-scout completions fish \
           > $out/share/fish/vendor_completions.d/nix-scout.fish
+        mkdir -p $out/share/bash-completion/completions
+        bash $out/bin/nix-scout completions bash \
+          > $out/share/bash-completion/completions/nix-scout
+        # nixpkgs zsh adds $out/share/zsh/site-functions to fpath (see pkgs.zsh).
+        mkdir -p $out/share/zsh/site-functions
+        bash $out/bin/nix-scout completions zsh \
+          > $out/share/zsh/site-functions/_nix-scout
         runHook postInstall
       '';
       meta = {
@@ -87,6 +94,7 @@
         bash ${./tests/activation-clear.sh}
         bash ${./tests/flakelet.sh}
         bash ${./tests/new-module.sh}
+        bash ${./tests/completions.sh}
         touch $out
       '';
 

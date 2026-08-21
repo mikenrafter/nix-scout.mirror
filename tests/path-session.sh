@@ -37,10 +37,25 @@ if [[ -f "$NS_MODULE" ]]; then
   else
     fail "nixos-module.nix has neither home.sessionPath nor fish_add_path ($NS_MODULE)"
   fi
+  if "$GREP" -q 'bash/nix-scout.bash' "$NS_MODULE" && "$GREP" -q 'zsh/nix-scout.zsh' "$NS_MODULE"; then
+    pass "nixos-module.nix sources bash/zsh completion path snippets"
+  else
+    fail "nixos-module.nix must source bash/zsh snippets for completion paths ($NS_MODULE)"
+  fi
   if "$GREP" -qE 'profiles/per-user/.*/nix-scout|NIX_SCOUT_PROFILE|nix-scout/bin' "$NS_MODULE"; then
     pass "nixos-module.nix references scout profile bin on PATH"
   else
     fail "nixos-module.nix does not prepend scout profile bin ($NS_MODULE)"
+  fi
+  if "$GREP" -q 'XDG_DATA_DIRS' "$NS_MODULE"; then
+    pass "nixos-module.nix sets XDG_DATA_DIRS for non-fish sessions"
+  else
+    fail "nixos-module.nix must set home.sessionVariables.XDG_DATA_DIRS ($NS_MODULE)"
+  fi
+  if "$GREP" -q 'MANPATH' "$NS_MODULE"; then
+    pass "nixos-module.nix sets MANPATH for non-fish sessions"
+  else
+    fail "nixos-module.nix must set home.sessionVariables.MANPATH ($NS_MODULE)"
   fi
 else
   fail "nixos-module.nix not found at $NS_MODULE (NIX_SCOUT_ROOT may not be set)"

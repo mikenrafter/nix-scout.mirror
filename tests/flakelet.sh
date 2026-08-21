@@ -56,6 +56,18 @@ for script in apply-hm.sh apply-env.sh; do
     else
       fail "lib/$script must source scout-lib.sh"
     fi
+    if [[ "$script" == "apply-env.sh" ]]; then
+      if "$GREP" -q 'XDG_DATA_DIRS' "$cand"; then
+        pass "apply-env.sh prepends XDG_DATA_DIRS"
+      else
+        fail "apply-env.sh must prepend XDG_DATA_DIRS in fish conf.d"
+      fi
+      if "$GREP" -q 'MANPATH' "$cand"; then
+        pass "apply-env.sh prepends MANPATH"
+      else
+        fail "apply-env.sh must prepend MANPATH in fish conf.d"
+      fi
+    fi
   else
     fail "lib/$script not found"
   fi

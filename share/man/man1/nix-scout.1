@@ -190,13 +190,22 @@ if any check fails.
 .TP
 .BI "completions " shell
 Print shell completions to stdout.
-Currently
-.B fish
-is the only supported
-.IR shell .
-Pipe the output into your Fish
-.I conf.d
-directory or source it in your Fish config.
+Supported
+.IR shell
+values:
+.BR fish ,
+.BR bash ,
+and
+.BR zsh .
+After
+.BR "nix-scout switch" ,
+completions ship in the scout profile under
+.IR share/fish/vendor_completions.d/nix-scout.fish ,
+.IR share/bash-completion/completions/nix-scout ,
+and
+.IR share/zsh/site-functions/_nix-scout .
+Discovery is wired by the shell snippets written on switch (see
+.SX FILES ).
 .TP
 .BR help | \-\-help | \-h
 Print usage information.
@@ -350,11 +359,64 @@ Written after a successful profile\-mode install so the scout profile bin is on
 and the profile\(aqs
 .I share/fish/vendor_completions.d
 is prepended to
-.B fish_complete_path
-(so switch\-installed completions win over a stale system copy).
+.BR fish_complete_path ,
+.I share
+to
+.BR XDG_DATA_DIRS ,
+and
+.I share/man
+to
+.B MANPATH
+(so switch\-installed completions, desktop/mime data, and manpages win over a
+stale system copy).
 Removed by
 .BR "nix\-scout clear" .
 Do not edit manually.
+.TP
+.I $XDG_CONFIG_HOME/bash/nix\-scout.bash
+Prepends the scout profile
+.I share
+to
+.BR XDG_DATA_DIRS
+(for
+.BR bash\-completion (1)
+v2) and
+.I share/man
+to
+.B MANPATH .
+Sourced automatically when Home Manager
+.B programs.bash
+is enabled; otherwise add
+.B source
+to your
+.I .bashrc .
+Removed by
+.BR "nix-scout clear" .
+.TP
+.I $XDG_CONFIG_HOME/zsh/nix\-scout.zsh
+Prepends
+.I share/zsh/site-functions
+to
+.B fpath
+so Zsh loads profile completions via compsys.
+Sourced automatically when Home Manager
+.B programs.zsh
+is enabled; otherwise add
+.B source
+to your
+.I .zshrc .
+Removed by
+.BR "nix-scout clear" .
+.TP
+.I Home Manager sessionVariables
+When the nix\-scout NixOS module is enabled, Home Manager sets
+.BR XDG_DATA_DIRS
+and
+.B MANPATH
+the same way for non\-Fish login sessions (alongside
+.BR home.sessionPath
+for
+.BR PATH ).
 .SH EXIT STATUS
 .TP
 .B 0

@@ -113,6 +113,15 @@ else
 fi
 
 echo "-- completions: switch tokens have no escaped spaces --"
+for shell in fish bash zsh; do
+  run_capture "$STRICT_BIN" completions "$shell"
+  COMP="$CAPTURED_OUT"
+  if [[ "$COMP" == *switch* && "$COMP" == *new* ]]; then
+    pass "completions $shell include switch and new"
+  else
+    fail "completions $shell should offer switch and new"
+  fi
+done
 run_capture "$STRICT_BIN" completions fish
 COMP="$CAPTURED_OUT"
 if [[ "$COMP" == *__nix_scout_module_completions* ]] && [[ "$COMP" == *"string replace"* ]]; then
@@ -124,6 +133,12 @@ if [[ "$COMP" == *new* && "$COMP" == *flakelet* ]]; then
   pass "completions include new + facets"
 else
   fail "completions should offer new and facet names"
+fi
+run_capture "$STRICT_BIN" completions bash
+if [[ "$CAPTURED_OUT" == *scout\ home\ flakelet* || "$CAPTURED_OUT" == *'scout home flakelet'* ]]; then
+  pass "bash completions offer new facets"
+else
+  fail "bash completions should offer facet names for new"
 fi
 
 finish_suite

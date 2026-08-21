@@ -95,7 +95,10 @@ let
 
   normalUserNames = lib.attrNames (lib.filterAttrs (_: u: u.isNormalUser) config.users.users);
 
-  scoutBin = name: "/nix/var/nix/profiles/per-user/${name}/nix-scout/bin";
+  scoutProfile = name: "/nix/var/nix/profiles/per-user/${name}/nix-scout";
+  scoutBin = name: "${scoutProfile name}/bin";
+  scoutShare = name: "${scoutProfile name}/share";
+  scoutMan = name: "${scoutProfile name}/share/man";
 in
 {
   _file = toString ./nixos-module.nix;
@@ -114,8 +117,20 @@ in
   home-manager.sharedModules = lib.mkForce [
     ({ config, lib, ... }: {
       home.sessionPath = [ (scoutBin config.home.username) ];
+      home.sessionVariables = {
+        XDG_DATA_DIRS = "${scoutShare config.home.username}:''${XDG_DATA_DIRS}";
+        MANPATH = "${scoutMan config.home.username}:''${MANPATH}";
+      };
       programs.fish.interactiveShellInit = lib.mkAfter ''
         fish_add_path -m ${scoutBin config.home.username}
+      '';
+      programs.bash.interactiveShellInit = lib.mkAfter ''
+        [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash" ]] && \
+          source "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash"
+      '';
+      programs.zsh.initExtra = lib.mkAfter ''
+        [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh" ]] && \
+          source "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh"
       '';
 
       home.activation.checkLinkTargets = lib.mkForce (

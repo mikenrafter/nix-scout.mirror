@@ -21,6 +21,7 @@ suites=(
   flakelet.sh
   cli.sh
   new-module.sh
+  completions.sh
   hm-activate-files.sh
   materialize.sh
   profile-gcroots.sh
