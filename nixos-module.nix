@@ -13,6 +13,12 @@
 # A module may export both facets or only one.
 # Missing settings.nix when flakelets is present is a hard eval error.
 #
+# Convention (enforced by `nix-scout new`, expected of every module):
+#   outputs = ... inputs:
+#     lib.optionalAttrs (inputs ? nix-scout) { # scout  # home } // { # flakelet }
+# Empty sections keep only the denoting comment. Flakelet-only modules use a
+# single-arg `outputs = inputs:` so path: flakelet eval does not imply lockable inputs.
+#
 # module-mode: scout modules cannot set system-wide NixOS options (use core config).
 #
 # Pure-eval note: eval-time filesystem access (readDir, pathExists, import) uses

@@ -35,6 +35,38 @@ with facet tags:
 Each entry is a directory containing a
 .IR flake.nix .
 .TP
+.BI "new " "name [facet\&.\&.\&.]"
+Scaffold a new scout module directory under
+.IR $NIX_SCOUT_MODULES / name .
+Optional
+.I facet
+arguments are
+.BR scout ,
+.BR home ,
+and
+.BR flakelet
+(any subset).
+Always writes a
+.I flake.nix
+with the standard facet separation:
+.RS
+.P
+.B lib.optionalAttrs (inputs ? nix\-scout) { # scout # home } // { # flakelet }
+.P
+Requested facets get stub implementations; omitted facets keep only the denoting comment.
+Also writes a placeholder
+.I flake.lock
+(nixpkgs narHash of zeros; other locked identity fields set to
+.BR nix\-scout_not\-real\-lockfile ).
+When
+.B flakelet
+is requested, also writes
+.IR settings.nix .
+Prints a reminder that a full
+.B nixos\-rebuild
+is required before any flakelet facet can be registered.
+.RE
+.TP
 .BI switch " name"
 Materialize the named module to a temporary directory and apply all present facets:
 .RS
@@ -257,6 +289,17 @@ at rebuild time and registers the service into
 when
 .B enable
 is true.
+.PP
+Every scout\-module
+.I flake.nix
+uses programmatic facet separation so flakelet path evaluation never builds the
+scout/home package facet:
+.RS
+.P
+.B lib.optionalAttrs (inputs ? nix\-scout) ( { # scout # home } ) // { # flakelet }
+.P
+All three section comments are always present; unused sections contain only the comment.
+.RE
 .PP
 Scout modules cannot set system\-wide NixOS options.
 Use the core flake or

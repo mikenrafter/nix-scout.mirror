@@ -53,6 +53,7 @@
         install -Dm755 $src/bin/nix-scout                $out/bin/nix-scout
         install -Dm755 $src/lib/materialize-module.sh  $out/lib/materialize-module.sh
         install -Dm644 $src/lib/scout-lib.sh           $out/lib/scout-lib.sh
+        install -Dm755 $src/lib/new-module.sh          $out/lib/new-module.sh
         install -Dm755 $src/lib/apply-hm.sh            $out/lib/apply-hm.sh
         install -Dm755 $src/lib/apply-env.sh           $out/lib/apply-env.sh
         install -Dm755 $src/lib/apply-flakelet.sh      $out/lib/apply-flakelet.sh
@@ -85,6 +86,7 @@
         bash ${./tests/path-session.sh}
         bash ${./tests/activation-clear.sh}
         bash ${./tests/flakelet.sh}
+        bash ${./tests/new-module.sh}
         touch $out
       '';
 

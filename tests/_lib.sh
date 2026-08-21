@@ -172,12 +172,16 @@ resolve_strict_nix_scout() {
 # Isolated HOME + scout profile/gc-roots. Never uses the real user nix-env profile.
 scout_write_paths_file() {
   local file="${1:-${NIX_SCOUT_PATHS_FILE:-${WORKDIR:-${TMPDIR:-/tmp}}/nix-scout-paths}}}"
+  local parent="${NIX_SCOUT_PARENT:-$REPO}"
+  local modules="${NIX_SCOUT_MODULES:-$REPO/tests/fixtures}"
   "$MKDIR" -p "$(dirname "$file")"
   cat >"$file" <<EOF
-NIX_SCOUT_PARENT=${NIX_SCOUT_PARENT:-$REPO}
-NIX_SCOUT_MODULES=${NIX_SCOUT_MODULES:-$REPO/tests/fixtures}
+NIX_SCOUT_PARENT=$parent
+NIX_SCOUT_MODULES=$modules
 EOF
   export NIX_SCOUT_PATHS_FILE="$file"
+  export NIX_SCOUT_PARENT="$parent"
+  export NIX_SCOUT_MODULES="$modules"
 }
 
 scout_isolate() {

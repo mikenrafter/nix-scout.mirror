@@ -20,6 +20,7 @@ suites=(
   activation-clear.sh
   flakelet.sh
   cli.sh
+  new-module.sh
   hm-activate-files.sh
   materialize.sh
   profile-gcroots.sh

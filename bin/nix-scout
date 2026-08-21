@@ -71,6 +71,7 @@ nix-scout — scout module switcher
 
 Usage:
   nix-scout list                        List scout modules and their facets
+  nix-scout new <name> [FACET...]       Scaffold a scout module (facets: scout home flakelet)
   nix-scout switch <name> [NIX-FLAGS]   Materialize, build, and apply a scout module
   nix-scout switch <path>               Install a store path or flake installable into profile
   nix-scout status                      Show active scout profile + gc-roots + flakelet status
@@ -85,6 +86,10 @@ Facets: a scout module may export any combination of:
   profile     packages.<system>.scout with bin/  — installed into scout nix profile
   home-files  packages.<system>.scout with home-files/ — files copied into \$HOME
   flakelet    flakelets.<attr> — registered with flakelet on rebuild; updated on switch
+
+  Module flake.nix always uses facet separation:
+    lib.optionalAttrs (inputs ? nix-scout) { # scout  # home } // { # flakelet }
+  Empty sections keep the denoting comment. 'nix-scout new' scaffolds this layout.
 
   switch fan-out: each facet script self-detects and no-ops if its output is absent.
   The flakelet entry must exist in /etc/flakelet.json (populated by nixos-rebuild).
@@ -107,16 +112,40 @@ EOF
 
 _facet_tags() {
   local dir="$1" flake="$1/flake.nix" tags=""
+  local has_home=false has_pkg=false
   if grep -q 'home-files' "$flake" 2>/dev/null; then
+    has_home=true
     tags="${tags:+${tags} }home-files"
   fi
-  if grep -qE '[^#]*packages\.' "$flake" 2>/dev/null && ! grep -q 'home-files' "$flake" 2>/dev/null; then
+  # profile = packages.*.scout present; still tag when home-files coexists
+  if grep -qE '[^#]*packages\.' "$flake" 2>/dev/null; then
+    has_pkg=true
+  fi
+  if [[ "$has_pkg" == "true" && "$has_home" != "true" ]]; then
     tags="${tags:+${tags} }profile"
+  elif [[ "$has_pkg" == "true" && "$has_home" == "true" ]]; then
+    # both: home-files already tagged; also profile when bin/ stub or buildEnv/symlinkJoin with paths
+    if grep -qE 'pathsToLink|/bin|writeShellScriptBin|buildEnv|symlinkJoin' "$flake" 2>/dev/null; then
+      tags="${tags:+${tags} }profile"
+    fi
   fi
   if grep -q 'flakelets' "$flake" 2>/dev/null; then
     tags="${tags:+${tags} }flakelet"
   fi
   printf '%s' "${tags:-unknown}"
+}
+
+cmd_new() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "nix-scout new: missing module name" >&2
+    usage >&2
+    exit 1
+  fi
+  shift
+  local modules
+  modules="$(_resolve_modules)"
+  bash "$(_scout_lib new-module.sh)" "$modules" "$name" "$@"
 }
 
 cmd_list() {
@@ -417,10 +446,20 @@ cmd_completions() {
 complete -c nix-scout -f
 
 function __nix_scout_needs_subcommand
-    not __fish_seen_subcommand_from list switch status clear doctor completions help --help -h
+    not __fish_seen_subcommand_from list new switch status clear doctor completions help --help -h
+end
+
+function __nix_scout_module_completions
+    # list prints "name  [facets]"; fish needs name\tdescription (no raw spaces in -a tokens)
+    nix-scout list 2>/dev/null | string replace -r '^(\S+)\s+\[(.*)\]\s*$' '$1\t$2'
+end
+
+function __nix_scout_new_facets
+    printf '%s\n' scout home flakelet
 end
 
 complete -c nix-scout -n __nix_scout_needs_subcommand -a list        -d 'List scout modules'
+complete -c nix-scout -n __nix_scout_needs_subcommand -a new         -d 'Scaffold a scout module'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a switch      -d 'Materialize, build, and apply a scout module'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a status      -d 'Show active scout profile and gc-roots'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a clear       -d 'Clear scout profile and gc-roots'
@@ -429,7 +468,11 @@ complete -c nix-scout -n __nix_scout_needs_subcommand -a completions -d 'Print s
 complete -c nix-scout -n __nix_scout_needs_subcommand -a help        -d 'Show usage'
 
 complete -c nix-scout -n '__fish_seen_subcommand_from switch' \
-    -a '(nix-scout list 2>/dev/null)' -d 'Scout module'
+    -a '(__nix_scout_module_completions)' -d 'Scout module'
+
+# After `new <name>`, offer facets (repeatable).
+complete -c nix-scout -n '__fish_seen_subcommand_from new; and test (count (commandline -opc)) -ge 3' \
+    -a '(__nix_scout_new_facets)' -d 'Facet'
 
 complete -c nix-scout -n '__fish_seen_subcommand_from completions' \
     -a fish -d 'Fish shell'
@@ -446,6 +489,11 @@ case "${1:-}" in
   list)
     _require_user
     cmd_list
+    ;;
+  new)
+    _require_user
+    shift
+    cmd_new "$@"
     ;;
   switch)
     _require_user
