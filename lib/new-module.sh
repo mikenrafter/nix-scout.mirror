@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generate a scout-module directory with facet-separated flake.nix (+ optional settings.nix, dummy flake.lock).
 # Usage: new-module.sh <modules-dir> <name> [facet...]
-# Facets: scout | home | flakelet  (any subset; all three sections always present in flake.nix)
+# Facets: scout | home | baseline | flakelet  (any subset; all four sections always present in flake.nix)
 set -euo pipefail
 
 MODULES_DIR="${1:?modules directory required}"
@@ -10,11 +10,13 @@ shift 2
 
 want_scout=false
 want_home=false
+want_baseline=false
 want_flakelet=false
 for facet in "$@"; do
   case "$facet" in
     scout) want_scout=true ;;
     home) want_home=true ;;
+    baseline) want_baseline=true ;;
     flakelet) want_flakelet=true ;;
     profile)
       echo "nix-scout new: use facet name 'scout' (not 'profile')" >&2
@@ -25,7 +27,7 @@ for facet in "$@"; do
       exit 1
       ;;
     *)
-      echo "nix-scout new: unknown facet '$facet' (supported: scout home flakelet)" >&2
+      echo "nix-scout new: unknown facet '$facet' (supported: scout home baseline flakelet)" >&2
       exit 1
       ;;
   esac
@@ -110,6 +112,17 @@ EOF
 EOF
   else
     printf '%s\n' "      # home"
+  fi
+
+  printf '%s\n' "      # baseline"
+  if [[ "$want_baseline" == "true" ]]; then
+    cat <<EOF
+      baseline = { lib, ... }: {
+        # Add system-wide NixOS options here. Imported directly into the
+        # host's module list at nixos-rebuild eval time — never applied by
+        # \`nix-scout switch\`; only takes effect on the next rebuild.
+      };
+EOF
   fi
 
   printf '%s\n' "    }"

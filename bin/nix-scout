@@ -71,7 +71,7 @@ nix-scout — scout module switcher
 
 Usage:
   nix-scout list                        List scout modules and their facets
-  nix-scout new <name> [FACET...]       Scaffold a scout module (facets: scout home flakelet)
+  nix-scout new <name> [FACET...]       Scaffold a scout module (facets: scout home baseline flakelet)
   nix-scout switch <name> [NIX-FLAGS]   Materialize, build, and apply a scout module
   nix-scout switch <path>               Install a store path or flake installable into profile
   nix-scout status                      Show active scout profile + gc-roots + flakelet status
@@ -85,13 +85,17 @@ Flags may appear before or after <name>, or after -- for flags that take argumen
 Facets: a scout module may export any combination of:
   profile     packages.<system>.scout with bin/  — installed into scout nix profile
   home-files  packages.<system>.scout with home-files/ — files copied into \$HOME
+  baseline    a NixOS module, imported directly on nixos-rebuild — can set ANY
+              system-wide option. Never built/applied by 'nix-scout switch';
+              only takes effect on the next rebuild.
   flakelet    flakelets.<attr> — registered with flakelet on rebuild; updated on switch
 
   Module flake.nix always uses facet separation:
-    lib.optionalAttrs (inputs ? nix-scout) { # scout  # home } // { # flakelet }
+    lib.optionalAttrs (inputs ? nix-scout) { # scout  # home  # baseline } // { # flakelet }
   Empty sections keep the denoting comment. 'nix-scout new' scaffolds this layout.
 
   switch fan-out: each facet script self-detects and no-ops if its output is absent.
+  'switch' never touches 'baseline' — it only takes effect via nixos-rebuild.
   The flakelet entry must exist in /etc/flakelet.json (populated by nixos-rebuild).
   If the entry is missing: rebuild once to register, then retry nix-scout switch.
 
@@ -106,7 +110,8 @@ Rebuild prebuild passes systemRebuild=true into module outputs; 'switch' materia
 scout-context.nix with systemRebuild=false. Modules read mode via nix-scout.lib.readSystemRebuild
 or by importing ./scout-context.nix (see lib/scout-module.nix).
 
-module-mode: scout modules cannot set system-wide NixOS options (use core config).
+module-mode: scout/home/flakelet facets cannot set system-wide NixOS options
+(use core config, or the 'baseline' facet, for that).
 EOF
 }
 
@@ -131,6 +136,10 @@ _facet_tags() {
   fi
   if grep -q 'flakelets' "$flake" 2>/dev/null; then
     tags="${tags:+${tags} }flakelet"
+  fi
+  # baseline: purely informational tag — nix-scout switch never acts on this facet.
+  if grep -qE '[^#]*baseline[[:space:]]*=' "$flake" 2>/dev/null; then
+    tags="${tags:+${tags} }baseline"
   fi
   printf '%s' "${tags:-unknown}"
 }
@@ -460,7 +469,7 @@ function __nix_scout_module_completions
 end
 
 function __nix_scout_new_facets
-    printf '%s\n' scout home flakelet
+    printf '%s\n' scout home baseline flakelet
 end
 
 complete -c nix-scout -n __nix_scout_needs_subcommand -a list        -d 'List scout modules'
@@ -507,7 +516,7 @@ _nix_scout() {
             ;;
         new)
             [[ $cword -ge 3 ]] || return
-            COMPREPLY=($(compgen -W 'scout home flakelet' -- "$cur"))
+            COMPREPLY=($(compgen -W 'scout home baseline flakelet' -- "$cur"))
             ;;
         completions)
             [[ $cword -eq 2 ]] || return
@@ -558,7 +567,7 @@ _nix_scout() {
                 new)
                     if (( CURRENT > 2 )); then
                         local -a facets
-                        facets=(scout home flakelet)
+                        facets=(scout home baseline flakelet)
                         _describe -t facets 'facet' facets
                     fi
                     ;;

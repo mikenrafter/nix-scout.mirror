@@ -54,8 +54,8 @@ if [[ "$ZSH_COMP" == *#compdef\ nix-scout* && "$ZSH_COMP" == *site-functions* ]]
 else
   fail "zsh completion script incomplete"
 fi
-if [[ "$ZSH_COMP" == *scout\ home\ flakelet* ]]; then
-  pass "zsh completions offer new facets"
+if [[ "$ZSH_COMP" == *scout* && "$ZSH_COMP" == *home* && "$ZSH_COMP" == *baseline* && "$ZSH_COMP" == *flakelet* ]]; then
+  pass "zsh completions offer new facets (incl. baseline)"
 else
   fail "zsh completions missing facet names"
 fi

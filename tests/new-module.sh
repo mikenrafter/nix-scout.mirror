@@ -135,8 +135,8 @@ else
   fail "completions should offer new and facet names"
 fi
 run_capture "$STRICT_BIN" completions bash
-if [[ "$CAPTURED_OUT" == *scout\ home\ flakelet* || "$CAPTURED_OUT" == *'scout home flakelet'* ]]; then
-  pass "bash completions offer new facets"
+if [[ "$CAPTURED_OUT" == *scout* && "$CAPTURED_OUT" == *home* && "$CAPTURED_OUT" == *baseline* && "$CAPTURED_OUT" == *flakelet* ]]; then
+  pass "bash completions offer new facets (incl. baseline)"
 else
   fail "bash completions should offer facet names for new"
 fi

@@ -25,14 +25,22 @@ into `$HOME`, or (de)register a systemd service — without running a full
     subdirectory copied verbatim into `$HOME`.
   - `flakelet` — `flakelets.<attr>`, a [flakelet](https://github.com/Mic92/flakelet)
     systemd unit, applied on `nixos-rebuild` and refreshed on switch.
+  - `baseline` — a real NixOS module (function or attrset), imported directly
+    into the host's module list at `nixos-rebuild` eval time. Because it's a
+    genuine module import rather than something routed through a switch
+    script, it can set **any** system-wide option — `nix.settings`, `boot.*`,
+    arbitrary `services.*`, and so on — and it can read the host's own
+    `config`/`lib` like any ordinary module. `nix-scout switch` never builds
+    or applies `baseline` at all; it only takes effect on the next rebuild.
 
 Every scout module's `flake.nix` follows the same boilerplate to keep the
-scout/home facets and the flakelet facet definitionally separate:
+scout/home/baseline facets and the flakelet facet definitionally separate:
 
 ```nix
 lib.optionalAttrs (inputs ? nix-scout) {
   # scout
   # home
+  # baseline
 } // {
   # flakelet
 }
@@ -40,8 +48,9 @@ lib.optionalAttrs (inputs ? nix-scout) {
 
 `inputs ? nix-scout` is true when `nix-scout` (CLI switch, or the NixOS
 module's rebuild-time prebuild) is evaluating the module, and false when
-flakelet evaluates the module's `path:` flake on its own — so the two
-facet groups never build in the same evaluation context.
+flakelet evaluates the module's `path:` flake on its own — so `baseline`
+(along with `scout`/`home`) never builds in flakelet's own evaluation
+context, same as `scout`/`home`.
 
 ## Install
 
@@ -98,9 +107,10 @@ root. Running it directly as root with no `SUDO_USER` is rejected.
 implementations for whichever facets you ask for:
 
 ```bash
-nix-scout new my-tool scout          # packages.${system}.scout (buildEnv, bin/ only)
-nix-scout new my-tool scout home     # same, plus a home-files/ subdirectory
-nix-scout new my-tool flakelet       # flakelets.default + settings.nix stub
+nix-scout new my-tool scout            # packages.${system}.scout (buildEnv, bin/ only)
+nix-scout new my-tool scout home       # same, plus a home-files/ subdirectory
+nix-scout new my-tool flakelet         # flakelets.default + settings.nix stub
+nix-scout new my-tool baseline         # a NixOS-module stub, imported on rebuild only
 ```
 
 It also drops a placeholder `flake.lock` (nixpkgs `narHash` of zeros;
@@ -124,8 +134,12 @@ the read pattern. Useful for shipping a lightweight stub in
 `environment.systemPackages` while reserving a heavier payload for
 explicit `switch`.
 
-Scout modules cannot set system-wide NixOS options — that's what your core
-host config is for.
+The `scout`, `home`, and `flakelet` facets cannot set system-wide NixOS
+options — that's what your core host config is for, or, from inside a scout
+module, the `baseline` facet: `baseline = { config, lib, ... }: { ... };`
+is imported directly into the host's module list on `nixos-rebuild` and can
+set anything an ordinary NixOS module could. It is never touched by
+`nix-scout switch` — only a rebuild picks it up.
 
 ## Troubleshooting
 
@@ -147,7 +161,7 @@ nix flake check
 ```
 
 covers `module-mode`, `path-session`, `activation-clear`, `flakelet`,
-`new-module`, and `completions`. Suites that need the built binary
+`new-module`, `baseline`, and `completions`. Suites that need the built binary
 (`cli`, `hm-activate-files`, `materialize`, `profile-gcroots`) are run
 manually:
 
@@ -178,6 +192,6 @@ ns-sandbox nix-scout switch my-tool
 - `nixos-module.nix` — the actual NixOS module logic behind
   `self.nixosModule`.
 
-Version 0.4.0. Bash implementation, no compiled binary. Depends on
+Version 0.5.0. Bash implementation, no compiled binary. Depends on
 `nixpkgs`, `nixpkgs-unstable`, `home-manager`, and `github:Mic92/flakelet`.
 MIT licensed.

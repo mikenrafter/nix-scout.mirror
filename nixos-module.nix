@@ -10,16 +10,27 @@
 # Facets per scout-module:
 #   packages.<system>.scout  — optional; installed into systemPackages on rebuild.
 #   flakelets.<attr>         — optional; requires settings.nix; registered with flakelet.
-# A module may export both facets or only one.
+#   baseline                 — optional; a NixOS module (function or attrset), imported
+#                              directly into this module's own `imports`. Only takes
+#                              effect via a real nixos-rebuild (this file's eval of
+#                              scoutOutputs below) — `nix-scout switch` never builds or
+#                              applies it. Because it's a real module import (not routed
+#                              through switch), it CAN set arbitrary system-wide options.
+# A module may export any subset of these facets.
 # Missing settings.nix when flakelets is present is a hard eval error.
 #
 # Convention (enforced by `nix-scout new`, expected of every module):
 #   outputs = ... inputs:
-#     lib.optionalAttrs (inputs ? nix-scout) { # scout  # home } // { # flakelet }
+#     lib.optionalAttrs (inputs ? nix-scout) { # scout  # home  # baseline } // { # flakelet }
 # Empty sections keep only the denoting comment. Flakelet-only modules use a
 # single-arg `outputs = inputs:` so path: flakelet eval does not imply lockable inputs.
+# `baseline` lives in the same `inputs ? nix-scout`-gated block as `scout`/`home`
+# (both `nix-scout switch` and this file's rebuild-time prebuild provide
+# `inputs.nix-scout`; flakelet's own bare `path:` runtime eval never does, so it
+# never sees `baseline` either — same exclusion `scout`/`home` already get).
 #
-# module-mode: scout modules cannot set system-wide NixOS options (use core config).
+# module-mode: `scout`/`home`/`flakelet` facets cannot set system-wide NixOS options
+# (use core config, or the `baseline` facet, for that).
 #
 # Pure-eval note: eval-time filesystem access (readDir, pathExists, import) uses
 # `self` (the host flake's store path, received via specialArgs) so pure evaluation
@@ -62,6 +73,13 @@ let
       m.outputs (inputs // { nix-scout = nixScout; systemRebuild = true; })
   ) scoutDirs;
 
+  # Modules exporting `baseline` — a NixOS module, imported directly so it can set
+  # arbitrary system-wide options. Only takes effect via nixos-rebuild (this eval);
+  # `nix-scout switch` never builds or applies `baseline` at all.
+  baselineModules = lib.mapAttrsToList (_: out: out.baseline) (
+    lib.filterAttrs (_: out: out ? baseline) scoutOutputs
+  );
+
   # Prebuild only modules that expose packages.<system>.scout.
   prebuiltModules = lib.mapAttrsToList (_: out: out.packages.${pkgs.system}.scout) (
     lib.filterAttrs (_: out:
@@ -103,7 +121,7 @@ in
 {
   _file = toString ./nixos-module.nix;
 
-  imports = [ flakelet.nixosModules.flakelet ];
+  imports = [ flakelet.nixosModules.flakelet ] ++ baselineModules;
 
   nixpkgs.overlays = [ nixScout.overlays.default ];
 

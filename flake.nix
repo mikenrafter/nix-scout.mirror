@@ -45,7 +45,7 @@
 
     packages.${system}.nix-scout = pkgs.stdenv.mkDerivation {
       pname = "nix-scout";
-      version = "0.4.0";
+      version = "0.5.0";
       src = ./.;
       dontBuild = true;
       installPhase = ''
@@ -89,12 +89,15 @@
       { buildInputs = [ pkgs.bash pkgs.gnugrep pkgs.coreutils pkgs.findutils pkgs.diffutils ]; }
       ''
         export NIX_SCOUT_ROOT=${./.}
-        bash ${./tests/module-mode.sh}
-        bash ${./tests/path-session.sh}
-        bash ${./tests/activation-clear.sh}
-        bash ${./tests/flakelet.sh}
-        bash ${./tests/new-module.sh}
-        bash ${./tests/completions.sh}
+        # Run from the whole-repo store path (not per-file store refs) so each
+        # suite's `source .../_lib.sh` sibling-lookup resolves.
+        bash "$NIX_SCOUT_ROOT/tests/module-mode.sh"
+        bash "$NIX_SCOUT_ROOT/tests/path-session.sh"
+        bash "$NIX_SCOUT_ROOT/tests/activation-clear.sh"
+        bash "$NIX_SCOUT_ROOT/tests/flakelet.sh"
+        bash "$NIX_SCOUT_ROOT/tests/new-module.sh"
+        bash "$NIX_SCOUT_ROOT/tests/baseline.sh"
+        bash "$NIX_SCOUT_ROOT/tests/completions.sh"
         touch $out
       '';
 

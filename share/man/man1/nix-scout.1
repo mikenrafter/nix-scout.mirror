@@ -1,4 +1,4 @@
-.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.4.0" "User Commands"
+.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.5.0" "User Commands"
 .SH NAME
 nix\-scout \- scout module switcher for NixOS
 .SH SYNOPSIS
@@ -13,9 +13,16 @@ Each module may export a
 .B packages.<system>.scout
 output (profile or home\-files facet), a
 .B flakelets
-output (flakelet daemon facet), or both.
+output (flakelet daemon facet), a
+.B baseline
+output (a NixOS module imported directly on rebuild), or any combination.
 Modules are applied without requiring a full
-.BR nixos\-rebuild (8).
+.BR nixos\-rebuild (8),
+except for
+.BR baseline ,
+which only ever takes effect via a rebuild \(em
+.B nix\-scout switch
+never builds or applies it.
 .PP
 The parent flake\(aqs
 .I flake.lock
@@ -31,7 +38,10 @@ with facet tags:
 .B home\-files
 (home\-files/ output),
 .B flakelet
-(flakelets.* output).
+(flakelets.* output),
+.B baseline
+(baseline module present; purely informational \(em never acted on by
+.BR switch ).
 Each entry is a directory containing a
 .IR flake.nix .
 .TP
@@ -43,6 +53,7 @@ Optional
 arguments are
 .BR scout ,
 .BR home ,
+.BR baseline ,
 and
 .BR flakelet
 (any subset).
@@ -51,7 +62,7 @@ Always writes a
 with the standard facet separation:
 .RS
 .P
-.B lib.optionalAttrs (inputs ? nix\-scout) { # scout # home } // { # flakelet }
+.B lib.optionalAttrs (inputs ? nix\-scout) { # scout # home # baseline } // { # flakelet }
 .P
 Requested facets get stub implementations; omitted facets keep only the denoting comment.
 Also writes a placeholder
@@ -96,6 +107,12 @@ The flakelet entry must already exist in
 .BR nixos\-rebuild (8)).
 If the entry is missing, rebuild once to register it, then retry.
 .RE
+.PP
+.B switch
+never builds or applies the
+.B baseline
+facet, if present \(em it only ever takes effect via
+.BR nixos\-rebuild (8).
 .TP
 .BI switch " path"
 Install a store path
@@ -298,22 +315,46 @@ at rebuild time and registers the service into
 when
 .B enable
 is true.
+.IP \(bu 2
+.B baseline
+\(em a NixOS module (function or attrset), imported directly into the host's
+own module list at
+.BR nixos\-rebuild (8)
+eval time via the nix\-scout NixOS module. Because it is a genuine module
+import rather than something routed through
+.BR "nix\-scout switch" ,
+it may set
+.B any
+system\-wide NixOS option, and may read the host's own
+.B config
+like any ordinary module.
+.B nix\-scout switch
+never builds or applies
+.BR baseline ;
+it only takes effect on the next rebuild.
 .PP
 Every scout\-module
 .I flake.nix
 uses programmatic facet separation so flakelet path evaluation never builds the
-scout/home package facet:
+scout/home/baseline facets:
 .RS
 .P
-.B lib.optionalAttrs (inputs ? nix\-scout) ( { # scout # home } ) // { # flakelet }
+.B lib.optionalAttrs (inputs ? nix\-scout) ( { # scout # home # baseline } ) // { # flakelet }
 .P
-All three section comments are always present; unused sections contain only the comment.
+All four section comments are always present; unused sections contain only the comment.
 .RE
 .PP
-Scout modules cannot set system\-wide NixOS options.
-Use the core flake or
-.B nixos\-rebuild
-for that.
+The
+.BR scout ,
+.BR home ,
+and
+.B flakelet
+facets cannot set system\-wide NixOS options.
+Use the core flake,
+.BR nixos\-rebuild ,
+or the
+.B baseline
+facet for that.
 .PP
 Module
 .I flake.nix
