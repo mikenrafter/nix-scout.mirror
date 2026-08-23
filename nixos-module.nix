@@ -75,6 +75,38 @@ let
     ) scoutDirs
   );
 
+  # Same facet-detection convention as bin/nix-scout's own _switch_module /
+  # _facet_tags — a flake.nix text search, not a Nix eval.
+  moduleHasFlakeletFacet = name:
+    lib.hasInfix "flakelets." (builtins.readFile (evalModulesDir + "/${name}/flake.nix"));
+
+  # A module with a flakelet facet is evaluated by flakelet directly against
+  # its own committed flake.lock, with no override for anything but its own
+  # injected pkgs argument — and after every successful build, `flakelet
+  # update` unconditionally runs `nix flake archive` to gc-root the flake
+  # source *and all its inputs* for offline re-evaluation (flakelet-core's
+  # `manager.rs`, `flake_roots`), which eagerly fetches every node in the
+  # lock graph regardless of whether anything actually dereferences its
+  # content. So for such a module, NO node may be the dummy sentinel
+  # (`nix-scout new`'s placeholder is only ever safe for a module with no
+  # flakelet facet at all — see lib/update-module.sh's header comment for
+  # the full reasoning, confirmed against a real build's `--show-trace`).
+  moduleDummyNodesUnderFlakelet = lib.filterAttrs (_: dummy: dummy != []) (
+    lib.mapAttrs (name: _:
+      if !(moduleHasFlakeletFacet name) then [] else
+      let
+        lockFile = evalModulesDir + "/${name}/flake.lock";
+        nodes =
+          if builtins.pathExists lockFile
+          then (builtins.fromJSON (builtins.readFile lockFile)).nodes or {}
+          else {};
+      in
+        lib.attrNames (lib.filterAttrs (nodeName: node:
+          nodeName != "root" && (node.locked.owner or null) == "nix-scout_not-real-lockfile"
+        ) nodes)
+    ) scoutDirs
+  );
+
   # Evaluate each scout-module's flake outputs (systemRebuild=true context).
   #
   # `inputs` is the parent flake's own full, already-resolved `inputs` attrset
@@ -93,13 +125,18 @@ let
   # which never provides `nix-scout` — see the module-authoring convention
   # documented in scout-modules/*/flake.nix.
   scoutOutputs =
-    if moduleMissingInputs != {}
+    if moduleMissingInputs != {} || moduleDummyNodesUnderFlakelet != {}
     then throw (
       "nix-scout: scout-module flake.lock out of sync with declared inputs:\n"
       + lib.concatStrings (lib.mapAttrsToList (name: missing:
           "  ${name}: missing ${lib.concatStringsSep ", " missing} in flake.lock"
           + " — run `nix-scout update ${name}` (or `nix-scout update all`) and rebuild\n"
         ) moduleMissingInputs)
+      + lib.concatStrings (lib.mapAttrsToList (name: dummy:
+          "  ${name}: flakelet facet but dummy/placeholder content for ${lib.concatStringsSep ", " dummy} in flake.lock"
+          + " — flakelet fetches every input for real regardless of facet gating;"
+          + " run `nix-scout update ${name}` (or `nix-scout update all`) and rebuild\n"
+        ) moduleDummyNodesUnderFlakelet)
     )
     else lib.mapAttrs (name: _:
       let

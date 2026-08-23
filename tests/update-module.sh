@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # update-module.sh / `nix-scout update`: sync a module's committed flake.lock
-# with its flake.nix-declared inputs. Only the nix-scout framework node stays
-# the dummy sentinel new-module.sh writes — nixpkgs and every other declared
-# input are always real (see lib/update-module.sh's header comment for why:
-# nixpkgs.lib is unconditionally forced by every scaffolded module's
-# `outputs`, and flakelet has no override for anything but its own injected
-# pkgs). A freshly-scaffolded module's nixpkgs starts dummy, so its *first*
-# `nix-scout update` legitimately does a real network fetch to promote it —
-# only the *second* run onward is a true no-op. Covers that contract, a
-# non-framework real input via a local path: stand-in (no network needed for
-# that part), and the error/permission paths. Requires network for the
-# nixpkgs promotion itself; a genuinely new non-framework *network* input is
-# exercised manually against a real module (e.g. `nix-scout update
-# claude-code-proxy` in phoe-nix), not here.
+# with its flake.nix-declared inputs. Behavior branches on whether the
+# module has a flakelet facet (see lib/update-module.sh's header comment):
+#
+# * No flakelet facet: nothing ever really touches this module's own lock
+#   (switch/rebuild always threads the parent's own resolved inputs
+#   instead), so nix-scout AND nixpkgs both stay the dummy sentinel
+#   new-module.sh writes, permanently — every other declared input is real.
+# * Has a flakelet facet: flakelet's own `nix flake archive` (run after
+#   every build, to gc-root the flake source + ALL inputs) eagerly fetches
+#   every node regardless of whether anything dereferences it — so NOTHING
+#   can be dummy, not even nix-scout.
+#
+# Covers both branches (real inputs via a local path: stand-in where
+# possible, no network needed for that part) and the error/permission
+# paths. Requires network for the framework-input promotions themselves; a
+# genuinely new non-framework *network* input is exercised manually against
+# a real module (e.g. `nix-scout update claude-code-proxy` in phoe-nix), not
+# here.
 #
 # Run from repo root:
 #   modules/nix-scout/tests/update-module.sh
@@ -48,40 +53,27 @@ pass "found update-module.sh at $UPDATE_LIB"
 
 NEW_LIB="${NIX_SCOUT_ROOT:-$REPO}/lib/new-module.sh"
 
-echo "-- scaffold a module (scout facet) --"
+# ============================================================
+# No flakelet facet: nix-scout AND nixpkgs stay dummy, always.
+# ============================================================
+
+echo "-- scaffold a module (scout facet, no flakelet) --"
 run_capture bash "$NEW_LIB" "$NIX_SCOUT_MODULES" sync-example scout
 if [[ "$CAPTURED_RC" -ne 0 ]]; then
   fail "new-module.sh scaffold failed: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
   finish_suite
 fi
 MOD="$NIX_SCOUT_MODULES/sync-example"
+"$GREP" -qF 'flakelets.' "$MOD/flake.nix" && {
+  fail "sync-example unexpectedly has a flakelet facet — test fixture assumption broken"
+  finish_suite
+}
 
-echo "-- first update on a fresh scaffold promotes nixpkgs to real, nix-scout stays dummy --"
-run_capture bash "$UPDATE_LIB" "$MOD"
-if [[ "$CAPTURED_RC" -eq 0 ]]; then
-  pass "update-module.sh exit 0 on first run against a fresh scaffold"
-else
-  fail "update-module.sh failed on a fresh scaffold: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
-fi
-NS_OWNER="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$MOD/flake.lock")"
-NP_OWNER="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$MOD/flake.lock")"
-if [[ "$NS_OWNER" == "nix-scout_not-real-lockfile" ]]; then
-  pass "nix-scout stays the dummy sentinel"
-else
-  fail "nix-scout must stay dummy, got owner='$NS_OWNER'"
-fi
-if [[ "$NP_OWNER" == "NixOS" ]]; then
-  pass "nixpkgs was promoted to real content"
-else
-  fail "nixpkgs must be real after the first update, got owner='$NP_OWNER'"
-fi
-
-echo "-- a second update is a true no-op (nixpkgs already real, nothing missing) --"
+echo "-- update is a no-op when flake.lock already covers every declared input --"
 BEFORE_SUM="$("$SHA256SUM" "$MOD/flake.lock")"
-MTIME_BEFORE="$("$STAT" -c '%Y' "$MOD/flake.lock")"
 run_capture bash "$UPDATE_LIB" "$MOD"
 if [[ "$CAPTURED_RC" -eq 0 ]]; then
-  pass "update-module.sh exit 0 on second (in-sync) run"
+  pass "update-module.sh exit 0 on in-sync module"
 else
   fail "update-module.sh should exit 0 on an in-sync module: $(printf %q "$CAPTURED_ERR")"
 fi
@@ -91,19 +83,22 @@ else
   fail "expected an 'already up to date' message, got $(printf %q "$CAPTURED_OUT$CAPTURED_ERR")"
 fi
 AFTER_SUM="$("$SHA256SUM" "$MOD/flake.lock")"
-MTIME_AFTER="$("$STAT" -c '%Y' "$MOD/flake.lock")"
-if [[ "$BEFORE_SUM" == "$AFTER_SUM" && "$MTIME_BEFORE" == "$MTIME_AFTER" ]]; then
-  pass "in-sync flake.lock is byte-identical and untouched (mtime) on the second run"
+if [[ "$BEFORE_SUM" == "$AFTER_SUM" ]]; then
+  pass "in-sync flake.lock is byte-identical after update (dummy sentinel untouched, no network)"
 else
   fail "update-module.sh must not rewrite an already-in-sync flake.lock"
 fi
+NS_OWNER="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$MOD/flake.lock")"
+NP_OWNER="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$MOD/flake.lock")"
+if [[ "$NS_OWNER" == "nix-scout_not-real-lockfile" && "$NP_OWNER" == "nix-scout_not-real-lockfile" ]]; then
+  pass "nix-scout AND nixpkgs both stay dummy (no flakelet facet — nothing real ever touches this lock)"
+else
+  fail "expected both dummy, got nix-scout='$NS_OWNER' nixpkgs='$NP_OWNER'"
+fi
 
-echo "-- update resolves a non-framework input for real too --"
-# A local path: input stands in for a real network input (e.g. llm-agents)
-# without requiring further network access in this suite. It must come back
-# with real (non-sentinel) locked content — flakelet has no way to fake any
-# input but its own injected pkgs (see lib/update-module.sh), so a dummy
-# sentinel there would make flakelet's real build 404 fetching a fake repo.
+echo "-- update resolves a non-framework input for real, framework nodes stay dummy --"
+# A local path: input stands in for a real network input without requiring
+# further network access in this suite.
 "$MKDIR" -p "$WORKDIR/tiny-flake"
 cat >"$WORKDIR/tiny-flake/flake.nix" <<'EOF'
 { outputs = _: { }; }
@@ -127,7 +122,6 @@ if [[ "$CAPTURED_RC" -eq 0 ]]; then
 else
   fail "update-module.sh failed on a module with a real extra input: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
 fi
-
 TINY_NAR="$("$JQ" -r '.nodes.tiny.locked.narHash // "MISSING"' "$MOD/flake.lock")"
 if [[ "$TINY_NAR" != "MISSING" && "$TINY_NAR" != "sha256-0000000000000000000000000000000000000000000=" ]]; then
   pass "non-framework input (tiny) resolved to real, non-sentinel content"
@@ -135,10 +129,11 @@ else
   fail "expected a real narHash for the 'tiny' input, got '$TINY_NAR'"
 fi
 NS_OWNER2="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$MOD/flake.lock")"
-if [[ "$NS_OWNER2" == "nix-scout_not-real-lockfile" ]]; then
-  pass "nix-scout stays dummy alongside a real extra input"
+NP_OWNER2="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$MOD/flake.lock")"
+if [[ "$NS_OWNER2" == "nix-scout_not-real-lockfile" && "$NP_OWNER2" == "nix-scout_not-real-lockfile" ]]; then
+  pass "nix-scout/nixpkgs stay dummy alongside a real extra input"
 else
-  fail "nix-scout must stay dummy: got owner='$NS_OWNER2'"
+  fail "must stay dummy: nix-scout='$NS_OWNER2' nixpkgs='$NP_OWNER2'"
 fi
 
 echo "-- update preserves flake.lock permission mode across a real rewrite --"
@@ -166,6 +161,90 @@ if [[ "$MODE_AFTER" == "644" ]]; then
 else
   fail "flake.lock mode changed to '$MODE_AFTER' (want 644) after update — mktemp's 0600 leaked through mv"
 fi
+
+# ============================================================
+# Has a flakelet facet: everything real, including nix-scout.
+# ============================================================
+
+echo "-- scaffold a module with a flakelet facet --"
+run_capture bash "$NEW_LIB" "$NIX_SCOUT_MODULES" flakelet-example flakelet
+if [[ "$CAPTURED_RC" -ne 0 ]]; then
+  fail "new-module.sh flakelet scaffold failed: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
+  finish_suite
+fi
+FMOD="$NIX_SCOUT_MODULES/flakelet-example"
+"$GREP" -qF 'flakelets.' "$FMOD/flake.nix" || {
+  fail "flakelet-example missing expected flakelets. facet"
+  finish_suite
+}
+
+echo "-- update on a flakelet-facet module promotes nix-scout to real too --"
+run_capture bash "$UPDATE_LIB" "$FMOD"
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "update-module.sh exit 0 on flakelet-facet module"
+else
+  fail "update-module.sh failed on flakelet-facet module: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
+fi
+FNS_OWNER="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$FMOD/flake.lock")"
+FNP_OWNER="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$FMOD/flake.lock")"
+if [[ "$FNS_OWNER" == "mikenrafter" ]]; then
+  pass "nix-scout promoted to real content (flakelet facet: nothing may stay dummy)"
+else
+  fail "expected nix-scout to be real for a flakelet-facet module, got owner='$FNS_OWNER'"
+fi
+if [[ "$FNP_OWNER" == "NixOS" ]]; then
+  pass "nixpkgs is real content"
+else
+  fail "expected nixpkgs to be real, got owner='$FNP_OWNER'"
+fi
+
+echo "-- a second update on the flakelet-facet module is a true no-op --"
+FMTIME_BEFORE="$("$STAT" -c '%Y' "$FMOD/flake.lock")"
+run_capture bash "$UPDATE_LIB" "$FMOD"
+FMTIME_AFTER="$("$STAT" -c '%Y' "$FMOD/flake.lock")"
+if [[ "$CAPTURED_RC" -eq 0 && "$CAPTURED_OUT$CAPTURED_ERR" == *"already up to date"* && "$FMTIME_BEFORE" == "$FMTIME_AFTER" ]]; then
+  pass "second run on flakelet-facet module is a true no-op"
+else
+  fail "expected a stable no-op second run: rc=$CAPTURED_RC out=$(printf %q "$CAPTURED_OUT$CAPTURED_ERR")"
+fi
+
+echo "-- a flakelet-only module with zero declared inputs is a graceful no-op --"
+"$MKDIR" -p "$NIX_SCOUT_MODULES/flakelet-only"
+cat >"$NIX_SCOUT_MODULES/flakelet-only/flake.nix" <<'EOF'
+{
+  outputs = inputs: {
+    flakelets.default = { types, ... }: {
+      options = { };
+      impl = { options, pkgs, name, ... }: {
+        services.${name} = {
+          description = "test";
+          serviceConfig.ExecStart = "${pkgs.coreutils}/bin/true";
+        };
+      };
+    };
+  };
+}
+EOF
+run_capture bash "$UPDATE_LIB" "$NIX_SCOUT_MODULES/flakelet-only"
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "update-module.sh exit 0 on a zero-input flakelet-only module"
+else
+  fail "update-module.sh should not error on a zero-input module: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
+fi
+if [[ -f "$NIX_SCOUT_MODULES/flakelet-only/flake.lock" ]]; then
+  fail "a zero-input flakelet-only module should get no flake.lock at all"
+else
+  pass "no flake.lock created for a zero-input module (matches flakelet's own contract)"
+fi
+if [[ "$CAPTURED_ERR" != *"jq: error"* ]]; then
+  pass "no stray jq errors on a zero-input module"
+else
+  fail "got a stray jq error: $(printf %q "$CAPTURED_ERR")"
+fi
+
+# ============================================================
+# Shared error paths
+# ============================================================
 
 echo "-- update errors clearly on a module with no flake.nix --"
 "$MKDIR" -p "$NIX_SCOUT_MODULES/no-flake"

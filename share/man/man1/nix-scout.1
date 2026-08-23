@@ -148,39 +148,68 @@ declared
 Runs
 .BR "nix flake lock" (1)
 in the module directory to add any input node that is declared but missing
-from the lock file (resolved for real — see below), forces
-.B nixpkgs
-to real content if it is still the scaffold\-time dummy
-.RB ( "nix flake lock --update-input nixpkgs" ,
-since plain
-.B "nix flake lock"
-never re\-resolves a node that is already present), then overwrites only the
+from the lock file, then branches on whether the module has a flakelet
+facet
+.RI ( flakelets.*
+in its
+.IR flake.nix ,
+detected the same way
+.B switch
+does — see
+.SX SCOUT MODULES ):
+.RS
+.IP \(bu 2
+.B No flakelet facet:
+only the
 .B nix\-scout
 node's
 .B locked
-content (narHash, rev, owner, repo) with the same dummy sentinel
+content (narHash, rev, owner, repo) is overwritten with the dummy sentinel
 .B new
-writes for it (see
-.SX SCOUT MODULES ).
+writes for it — and
+.B nixpkgs
+is forced to that
+.I same
+dummy alongside it if it isn't already (both stay dummy permanently). Every
+.I other
+declared input's fetched content is left exactly as resolved.
+.IP \(bu 2
+.B Has a flakelet facet:
+.B every
+node, including
+.BR nix\-scout ,
+is forced to real content
+.RB ( "nix flake lock --update-input <name>" ,
+since plain
+.B "nix flake lock"
+never re\-resolves a node that is already present). Nothing is ever
+scrubbed to dummy here.
+.RE
+.P
 .B original
 and
 .B inputs
-(follows relationships) are always left as real, accurate metadata; every
-.I other
-declared input's fetched content — including nixpkgs — is left exactly as
-resolved.
+(follows relationships) are always left as real, accurate metadata in both
+cases; only
+.B locked
+(fetched content) is ever touched.
 .RS
 .P
-Only
-.BR nix\-scout \(aqs
-content is ever safe to fake: it is never dereferenced by anything on any
-evaluation path (a module's own
+Why the branch: for a module with
+.B no
+flakelet facet, nothing real ever touches its own committed
+.I flake.lock
+at all —
+.B "nix\-scout switch" / rebuild
+always thread the parent flake's own already\-resolved inputs instead
+(materialize\-module.sh stamps the parent's
+.I flake.lock
+over the module's before building; the nixosModule threads inputs directly).
+A module's own
 .B outputs
 only ever tests
 .B "inputs ? nix\-scout"
-for existence, never touches its content; real resolution always comes from
-the parent flake — see
-.SX SCOUT MODULES ).
+for existence, never touches its content, so faking it is always safe there.
 .B nixpkgs
 looks like the same kind of "framework" input at scaffold time but is not:
 every module the
@@ -191,33 +220,52 @@ at the very top of
 .BR outputs ,
 unconditionally forced the instant anything calls
 .B outputs
-for real — before any facet gate is even reached. Confirmed directly via
+for real — before any facet gate is even reached (confirmed via
 .B "nix build path:<module>#scout --show-trace" :
 the forced fetch chain is
-.BR "outputs \(-> nixpkgs.result \(-> import \(-> fetchFinalTree" .
-Every other input a module declares must likewise stay real: flakelet
-evaluates a registered module's flake directly via
+.BR "outputs \(-> nixpkgs.result \(-> import \(-> fetchFinalTree" ).
+For a module
+.B with
+a flakelet facet, flakelet evaluates the flake directly via
 .B builtins.getFlake
 and actually calls its
 .BR impl ,
 forcing whatever any input it touches resolves to through the module's own
 committed
-.IR flake.lock .
-flakelet's only override mechanism
-.RB ( input_overrides
-in its own config) is hard\-restricted to the key
-.B nixpkgs
-— a separate substitution of the
+.IR flake.lock ,
+with no override for anything but its own injected
 .B pkgs
-.I argument
-flakelet injects itself, structurally unrelated to a flake's own declared
-inputs — so there is no way to fake any input this way; doing so does not
-fail closed, it 404s flakelet's real build fetching the sentinel's fake repo.
+argument
+.RB ( input_overrides
+in its own config is hard\-restricted to the key
+.BR nixpkgs ).
+Worse, after every successful build
+.B "flakelet update"
+unconditionally runs
+.B "nix flake archive"
+to gc\-root "the flake source + inputs" for offline re\-evaluation — this
+eagerly fetches
+.B every
+node in the lock graph regardless of whether anything actually dereferences
+its content (confirmed directly: a dummy
+.B nix\-scout
+node, despite never being dereferenced by any evaluated expression, still
+404s
+.B "nix flake archive"
+fetching its fake repo). So for such a module nothing may be dummy, ever.
 .P
 Use
 .B all
 to sync every module under
 .IR $NIX_SCOUT_MODULES .
+A flakelet\-only module declaring zero inputs (the convention for pure
+flakelet\-facet modules — see
+.SX SCOUT MODULES )
+gets no
+.I flake.lock
+at all from either branch, and
+.B update
+is a graceful no\-op for it.
 .P
 This also exists because flakelet's evaluation of a registered module runs
 plain
@@ -500,13 +548,30 @@ eval time, the nix\-scout NixOS module checks every scout module's committed
 against its
 .IR flake.nix\(aq s
 declared
-.B inputs
-and throws a build\-time error naming the module and the missing input(s) if
-any are out of sync (see
+.BR inputs ,
+and throws a build\-time error naming the module and the problem if either of
+two things is out of sync (see
 .B update
-above). This turns a silent, hard\-to\-diagnose failure in flakelet's own
-evaluation (which cannot write the missing node itself) into an immediate,
-actionable rebuild error.
+above):
+.RS
+.IP \(bu 2
+a declared input has no corresponding node in
+.I flake.lock
+at all;
+.IP \(bu 2
+a module
+.B with
+a flakelet facet has
+.B any
+node still carrying the dummy sentinel content — nothing may be dummy there,
+since flakelet's own
+.B "nix flake archive"
+step fetches every node regardless of facet gating.
+.RE
+.IP
+This turns a silent, hard\-to\-diagnose failure in flakelet's own evaluation
+(which has no write access to fix a missing node, and no way to fake a real
+one) into an immediate, actionable rebuild error.
 .SH FILES
 .TP
 .I /etc/flakelet/config.json

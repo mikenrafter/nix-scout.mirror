@@ -84,19 +84,21 @@ NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
 Flags may appear before or after <name>, or after -- for flags that take arguments.
 
 'nix-scout update' runs 'nix flake lock' against a module directory to add any
-input node flake.nix declares but flake.lock lacks, then scrubs only the
-nix-scout node back to the dummy sentinel 'new' writes -- its content is never
-dereferenced by anything, on any evaluation path (see materialize-module.sh),
-so there's never a real pin to maintain there. Every OTHER declared input,
-including nixpkgs, is always resolved for real (forcing a real refresh via
-'nix flake lock --update-input nixpkgs' if it's still the scaffold-time dummy):
-every scaffolded module's outputs does 'lib = nixpkgs.lib;' unconditionally,
-before any facet gate, and flakelet evaluates a registered module's flake
-directly with no override for anything but its own injected pkgs -- a dummy
-sentinel for nixpkgs or any other real input 404s flakelet's build fetching a
-fake repo. 'switch' runs this sync automatically (non-fatally) before
-materializing, so newly-declared inputs are kept in sync without a separate
-manual step.
+input node flake.nix declares but flake.lock lacks, then branches on whether
+the module has a flakelet facet:
+  no flakelet facet   nix-scout AND nixpkgs stay the dummy sentinel 'new'
+                       writes; nothing real ever touches this module's own
+                       lock (switch/rebuild always thread the parent's own
+                       resolved inputs instead) -- every OTHER declared
+                       input still resolves for real.
+  has flakelet facet  EVERY node is forced real, including nix-scout: after
+                       every build, flakelet's own 'nix flake archive' eagerly
+                       fetches the whole lock graph regardless of whether
+                       anything dereferences a node's content, and its only
+                       override is for its own injected pkgs argument -- so
+                       nothing here can be a dummy placeholder.
+'switch' runs this sync automatically (non-fatally) before materializing, so
+newly-declared inputs are kept in sync without a separate manual step.
 
 Facets: a scout module may export any combination of:
   profile     packages.<system>.scout with bin/  — installed into scout nix profile

@@ -1,46 +1,39 @@
 #!/usr/bin/env bash
 # Sync a scout module's committed flake.lock structure with its flake.nix-
-# declared inputs, while keeping the nix-scout framework node dummy.
+# declared inputs.
 #
-# nix-scout is the only input whose committed content is never actually used
-# for real: nix-scout switch/rebuild always threads the parent flake's own
-# already-resolved inputs instead (materialize-module.sh stamps the parent's
-# flake.lock over the module's before building), and a module's own
-# flake.nix never dereferences it beyond an `inputs ? nix-scout` existence
-# check (see scout-modules/*/flake.nix convention) — confirmed empirically:
-# `nix build path:<module>#scout --show-trace` never touches nix-scout's
-# content. So keeping it as the dummy sentinel lib/new-module.sh writes is
-# always safe, on any evaluation path.
+# Whether ANY node in the committed lock can safely be a dummy placeholder
+# depends entirely on whether the module has a flakelet facet
+# (`flakelets.*` in its flake.nix):
 #
-# nixpkgs is NOT in the same category, despite scaffolding alongside
-# nix-scout as a "framework" input — every scout module's `outputs` does
-# `lib = nixpkgs.lib;` at the very top, unconditionally forced the instant
-# anything calls `outputs` for real, before any facet gate is even reached.
-# `nix build path:<module>#scout --show-trace` confirms this directly: the
-# forced fetch chain is `outputs -> nixpkgs.result -> import -> fetchFinalTree`.
-# nixpkgs must always resolve to real, fetchable content.
+# * No flakelet facet: nothing ever really touches this module's own
+#   committed lock. `nix-scout switch`/rebuild always threads the parent
+#   flake's own already-resolved inputs instead (materialize-module.sh
+#   stamps the parent's flake.lock over the module's before building; the
+#   nixosModule threads inputs directly, bypassing the module's own lock
+#   entirely). So EVERY node here — nix-scout, nixpkgs, everything — can
+#   stay the dummy sentinel lib/new-module.sh writes.
 #
-# Every OTHER declared input (e.g. a module pulling its own CLI straight from
-# an upstream flake) must likewise stay real: flakelet evaluates a registered
-# module's flake directly via `builtins.getFlake` and actually calls its
-# `impl`, forcing whatever that input resolves to via the module's own
-# committed flake.lock — there is no override mechanism for it (flakelet's
-# `input_overrides` only supports the key "nixpkgs", which is a separate
-# `pkgs`-*argument* substitution flakelet injects itself, structurally
-# unrelated to a flake's own declared inputs; verified against
-# flakelet-core's source directly). Handing any of this a dummy, unfetchable
-# sentinel does not fail closed quietly — it 404s flakelet's real build.
+# * Has a flakelet facet: flakelet evaluates the module's flake directly via
+#   `builtins.getFlake` against the module's OWN committed lock, with no
+#   override for anything but its own injected `pkgs` argument
+#   (`input_overrides` is hard-restricted to the key "nixpkgs" — verified
+#   directly against flakelet-core's source). Worse: after every successful
+#   build, `flakelet update` unconditionally runs `nix flake archive --json`
+#   to gc-root "the flake source + inputs" for offline re-evaluation
+#   (flakelet-core/src/manager.rs, `flake_roots`) — this eagerly fetches
+#   EVERY node in the lock graph regardless of whether anything actually
+#   dereferences its content. Confirmed directly: a dummy nix-scout node,
+#   despite never being dereferenced by any evaluated expression, still
+#   404s `nix flake archive` fetching its fake repo. So NOTHING can be
+#   dummy here — not even nix-scout.
 #
-# `nix flake lock` is used to discover the graph structure (which nodes
-# exist, their `original`/`inputs` follows) for any input flake.nix declares
-# that isn't already in the lock. Because it never re-resolves a node that's
-# already present, a pre-existing dummy nixpkgs (e.g. from the `nix-scout
-# new` scaffold, or the bootstrap pre-seed below) needs an explicit
-# `--update-input nixpkgs` to force it to real content — plain `nix flake
-# lock` alone would leave it dummy forever. Only the nix-scout node — found
-# via root.inputs, not by literal key name, since a colliding transitive
-# input can rename it — gets its `locked` block scrubbed back to the dummy
-# sentinel afterward.
+# `nix flake lock` is used to discover/complete the graph structure (add any
+# input node flake.nix declares but flake.lock lacks). Because it never
+# re-resolves a node that's already present, a pre-existing dummy node (from
+# a `nix-scout new` scaffold, or this script's own no-flakelet-facet branch)
+# needs an explicit `--update-input <name>` to force it to real content —
+# plain `nix flake lock` alone would leave it dummy forever.
 #
 # Usage: update-module.sh <module-dir>
 set -euo pipefail
@@ -64,12 +57,63 @@ if [[ ! -w "$MODULE_DIR" ]]; then
   exit 1
 fi
 
+# Same facet-detection convention as bin/nix-scout's own _switch_module /
+# _facet_tags — a flake.nix text grep, not a Nix eval.
+has_flakelet=false
+grep -q 'flakelets\.' "$MODULE_DIR/flake.nix" 2>/dev/null && has_flakelet=true
+
+# Canonicalize for comparison (sorted keys, compact) so reformatting alone
+# (nix's writer vs jq's) never reads as a change.
+_canon_hash() {
+  [[ -f "$1" ]] || return 0
+  jq -S -c . "$1" 2>/dev/null | sha256sum
+}
+
+# Force $1 (a declared top-level input name) to real content if it's
+# currently the dummy sentinel (or missing a node entirely — `nix flake
+# lock` already added it above, so this only ever needs to *promote*, never
+# add). No-ops if the input isn't declared at all.
+_force_real() {
+  local input="$1"
+  jq -e --arg i "$input" '.nodes.root.inputs | has($i)' "$MODULE_DIR/flake.lock" >/dev/null 2>&1 || return 0
+  local owner
+  owner="$(jq -r --arg i "$input" '.nodes[.nodes.root.inputs[$i]].locked.owner // ""' "$MODULE_DIR/flake.lock")"
+  if [[ "$owner" == "nix-scout_not-real-lockfile" ]]; then
+    (cd "$MODULE_DIR" && nix flake lock --update-input "$input")
+  fi
+}
+
+if [[ "$has_flakelet" == "true" ]]; then
+  before="$(_canon_hash "$MODULE_DIR/flake.lock")"
+  (cd "$MODULE_DIR" && nix flake lock)
+  # A module with zero declared inputs (the flakelet-only convention — see
+  # scout-modules/*/flake.nix comments: "No flake inputs declared — flakelet
+  # path: eval must not require a writable lockfile") gets no flake.lock at
+  # all from `nix flake lock` above — nothing to force real, nothing to do.
+  if [[ -f "$MODULE_DIR/flake.lock" ]]; then
+    _force_real nix-scout
+    _force_real nixpkgs
+  fi
+  # Nothing is scrubbed: every node must stay real for a flakelet-registered
+  # module (see header comment).
+  after="$(_canon_hash "$MODULE_DIR/flake.lock")"
+  if [[ "$before" != "$after" ]]; then
+    echo "nix-scout: updated $MODULE_DIR/flake.lock (flakelet facet: all inputs real)"
+  elif [[ ! -f "$MODULE_DIR/flake.lock" ]]; then
+    echo "nix-scout: $MODULE_DIR has no declared inputs — nothing to lock"
+  else
+    echo "nix-scout: $MODULE_DIR/flake.lock already up to date"
+  fi
+  exit 0
+fi
+
+# No flakelet facet below this point: nix-scout AND nixpkgs both stay dummy.
+
 # Pre-seed a module with no committed flake.lock at all (never scaffolded via
 # `nix-scout new`, or the lock was lost) with the standard dummy skeleton
-# before running `nix flake lock` below, purely to avoid an unnecessary real
-# fetch of nix-scout's own (sizeable) transitive graph just to learn a shape
-# that gets scrubbed to dummy content a few lines down anyway. nixpkgs gets
-# forced to real content regardless a few steps later.
+# before running `nix flake lock`, purely to avoid an unnecessary real fetch
+# of nix-scout's own (sizeable) transitive graph just to learn a shape that
+# gets scrubbed to dummy content a few lines down anyway.
 if [[ ! -f "$MODULE_DIR/flake.lock" ]]; then
   # `import "<string>"` requires an absolute path under --impure; a relative
   # MODULE_DIR would silently fail to eval (nix path literals, not strings,
@@ -83,33 +127,15 @@ if [[ ! -f "$MODULE_DIR/flake.lock" ]]; then
   fi
 fi
 
-# Canonicalize for comparison (sorted keys, compact) so reformatting alone
-# (nix's writer vs jq's) never reads as a change.
-_canon_hash() {
-  [[ -f "$1" ]] || return 0
-  jq -S -c . "$1" 2>/dev/null | sha256sum
-}
-
 before="$(_canon_hash "$MODULE_DIR/flake.lock")"
 
 (cd "$MODULE_DIR" && nix flake lock)
 
-# Force nixpkgs to real content if it's declared but still the dummy
-# sentinel (scaffold-fresh, or bootstrapped above) — see header comment for
-# why plain `nix flake lock` above never touches an already-present node.
-if jq -e '.nodes.root.inputs | has("nixpkgs")' "$MODULE_DIR/flake.lock" >/dev/null 2>&1; then
-  np_owner="$(jq -r '.nodes[.nodes.root.inputs.nixpkgs].locked.owner // ""' "$MODULE_DIR/flake.lock")"
-  if [[ "$np_owner" == "nix-scout_not-real-lockfile" ]]; then
-    (cd "$MODULE_DIR" && nix flake lock --update-input nixpkgs)
-  fi
-fi
-
-# Scrub only the node root.inputs["nix-scout"] actually points to back to the
-# dummy sentinel — looked up by the root-input mapping, not by literal node
-# key, since a colliding transitive input can rename it. Every other node is
-# left exactly as resolved: real, fetchable content. `original`/`inputs`
-# (follows relationships) are always left untouched; only `locked` (fetched
-# content) is ever scrubbed.
+# Scrub the nix-scout/nixpkgs node(s) back to the dummy sentinel — looked up
+# via root.inputs, not literal key name, since a colliding transitive input
+# can rename one of them (e.g. "nixpkgs_2"). Every other node is left
+# exactly as resolved: real, fetchable content. `original`/`inputs` (follows
+# relationships) are always left untouched; only `locked` is ever scrubbed.
 tmp="$(mktemp "${MODULE_DIR}/.flake.lock.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 jq \
@@ -118,8 +144,9 @@ jq \
   --arg rev "0000000000000000000000000000000000000000" \
   '
   (.nodes.root.inputs["nix-scout"] // "") as $nsKey |
+  (.nodes.root.inputs["nixpkgs"] // "") as $npKey |
   .nodes |= with_entries(
-    if (.key == $nsKey and $nsKey != "") then
+    if (.key == $nsKey and $nsKey != "") or (.key == $npKey and $npKey != "") then
       .value.locked |= (
         .lastModified = 0
         | .narHash = $nar
