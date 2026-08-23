@@ -45,3 +45,64 @@ pin_gcroot() {
   _priv_mkdir "$gcroots"
   _priv_ln_sfn "$store" "$gcroots/$name"
 }
+
+# Dummy sentinel flake.lock (nix-scout + nixpkgs nodes never really resolved —
+# real resolution always comes from the parent flake; see materialize-module.sh
+# and nixos-module.nix). Shared by new-module.sh (initial scaffold) and
+# update-module.sh (bootstrapping a module that lost its committed lock).
+write_sentinel_lock() {
+  local target="$1"
+  local _SENTINEL="nix-scout_not-real-lockfile"
+  local _NAR="sha256-0000000000000000000000000000000000000000000="
+  local _REV="0000000000000000000000000000000000000000"
+  cat > "$target" <<EOF
+{
+  "nodes": {
+    "nix-scout": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 0,
+        "narHash": "${_NAR}",
+        "owner": "${_SENTINEL}",
+        "repo": "${_SENTINEL}",
+        "rev": "${_REV}",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mikenrafter",
+        "repo": "nix-scout",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 0,
+        "narHash": "${_NAR}",
+        "owner": "${_SENTINEL}",
+        "repo": "${_SENTINEL}",
+        "rev": "${_REV}",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "nix-scout": "nix-scout",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
+EOF
+}

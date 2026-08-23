@@ -74,6 +74,7 @@ Usage:
   nix-scout new <name> [FACET...]       Scaffold a scout module (facets: scout home baseline flakelet)
   nix-scout switch <name> [NIX-FLAGS]   Materialize, build, and apply a scout module
   nix-scout switch <path>               Install a store path or flake installable into profile
+  nix-scout update <name/all>           Sync a module's flake.lock with its declared inputs
   nix-scout status                      Show active scout profile + gc-roots + flakelet status
   nix-scout clear                       Clear scout profile and gc-roots
   nix-scout doctor                      Check flakelet integration health and print pass/fail report
@@ -81,6 +82,15 @@ Usage:
 
 NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
 Flags may appear before or after <name>, or after -- for flags that take arguments.
+
+'nix-scout update' runs 'nix flake lock' against a module directory to discover
+the input graph shape (any node flake.nix declares but flake.lock lacks), then
+scrubs every node's locked content back to the same dummy sentinel 'new' writes
+-- a module's own flake.lock is never actually used to resolve anything for
+real (see materialize-module.sh / flakelet's host-nixpkgs-only eval), so there
+is never a real pin to maintain there. 'switch' runs this automatically
+(non-fatally) before materializing, so newly-declared inputs are kept in sync
+without a separate manual step.
 
 Facets: a scout module may export any combination of:
   profile     packages.<system>.scout with bin/  — installed into scout nix profile
@@ -172,6 +182,39 @@ cmd_list() {
   done | sort
 }
 
+cmd_update() {
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "nix-scout update: missing module name (or 'all')" >&2
+    usage >&2
+    exit 1
+  fi
+  local modules
+  modules="$(_resolve_modules)"
+
+  if [[ "$name" == "all" ]]; then
+    if [[ ! -d "$modules" ]]; then
+      echo "nix-scout: modules directory missing: $modules" >&2
+      exit 1
+    fi
+    local dir mod_name rc=0
+    for dir in "$modules"/*; do
+      [[ -d "$dir" && -f "$dir/flake.nix" ]] || continue
+      mod_name="$(basename "$dir")"
+      echo "nix-scout: update $mod_name" >&2
+      bash "$(_scout_lib update-module.sh)" "$dir" || rc=$?
+    done
+    return $rc
+  fi
+
+  local mod_dir="$modules/$name"
+  if [[ ! -f "$mod_dir/flake.nix" ]]; then
+    echo "nix-scout: module not found: $name (expected $mod_dir/flake.nix)" >&2
+    exit 1
+  fi
+  bash "$(_scout_lib update-module.sh)" "$mod_dir"
+}
+
 _switch_module() {
   local name="$1"
   shift
@@ -185,6 +228,9 @@ _switch_module() {
     echo "nix-scout: module not found: $name (expected $mod_dir/flake.nix)" >&2
     exit 1
   fi
+
+  bash "$(_scout_lib update-module.sh)" "$mod_dir" >&2 \
+    || echo "nix-scout: warning: flake.lock sync failed for $name — continuing with existing lock" >&2
 
   grep -qE '[^#]*(packages\.|\.scout)' "$mod_dir/flake.nix" 2>/dev/null && has_pkg=true
   grep -q 'flakelets' "$mod_dir/flake.nix" 2>/dev/null && has_flt=true
@@ -460,7 +506,7 @@ cmd_completions() {
 complete -c nix-scout -f
 
 function __nix_scout_needs_subcommand
-    not __fish_seen_subcommand_from list new switch status clear doctor completions help --help -h
+    not __fish_seen_subcommand_from list new switch update status clear doctor completions help --help -h
 end
 
 function __nix_scout_module_completions
@@ -475,6 +521,7 @@ end
 complete -c nix-scout -n __nix_scout_needs_subcommand -a list        -d 'List scout modules'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a new         -d 'Scaffold a scout module'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a switch      -d 'Materialize, build, and apply a scout module'
+complete -c nix-scout -n __nix_scout_needs_subcommand -a update      -d "Sync a module's flake.lock with its declared inputs"
 complete -c nix-scout -n __nix_scout_needs_subcommand -a status      -d 'Show active scout profile and gc-roots'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a clear       -d 'Clear scout profile and gc-roots'
 complete -c nix-scout -n __nix_scout_needs_subcommand -a doctor      -d 'Check flakelet integration health'
@@ -483,6 +530,9 @@ complete -c nix-scout -n __nix_scout_needs_subcommand -a help        -d 'Show us
 
 complete -c nix-scout -n '__fish_seen_subcommand_from switch' \
     -a '(__nix_scout_module_completions)' -d 'Scout module'
+
+complete -c nix-scout -n '__fish_seen_subcommand_from update' \
+    -a '(__nix_scout_module_completions) all' -d 'Scout module'
 
 # After `new <name>`, offer facets (repeatable).
 complete -c nix-scout -n '__fish_seen_subcommand_from new; and test (count (commandline -opc)) -ge 3' \
@@ -505,7 +555,7 @@ _nix_scout() {
     _init_completion -n : || return
 
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W 'list new switch status clear doctor completions help' -- "$cur"))
+        COMPREPLY=($(compgen -W 'list new switch update status clear doctor completions help' -- "$cur"))
         return
     fi
 
@@ -513,6 +563,10 @@ _nix_scout() {
         switch)
             [[ $cword -eq 2 ]] || return
             COMPREPLY=($(compgen -W "$(_nix_scout_modules)" -- "$cur"))
+            ;;
+        update)
+            [[ $cword -eq 2 ]] || return
+            COMPREPLY=($(compgen -W "$(_nix_scout_modules) all" -- "$cur"))
             ;;
         new)
             [[ $cword -ge 3 ]] || return
@@ -549,6 +603,7 @@ _nix_scout() {
                 'list:List scout modules'
                 'new:Scaffold a scout module'
                 'switch:Materialize, build, and apply a scout module'
+                'update:Sync a module'"'"'s flake.lock with its declared inputs'
                 'status:Show active scout profile and gc-roots'
                 'clear:Clear scout profile and gc-roots'
                 'doctor:Check flakelet integration health'
@@ -562,6 +617,11 @@ _nix_scout() {
                 switch)
                     local -a modules
                     modules=(${${(f)"$(nix-scout list 2>/dev/null | awk '{print $1}')"}:#})
+                    _describe -t modules 'scout module' modules
+                    ;;
+                update)
+                    local -a modules
+                    modules=(${${(f)"$(nix-scout list 2>/dev/null | awk '{print $1}')"}:#} all)
                     _describe -t modules 'scout module' modules
                     ;;
                 new)
@@ -605,6 +665,11 @@ case "${1:-}" in
     _require_user
     shift
     cmd_switch "$@"
+    ;;
+  update)
+    _require_user
+    shift
+    cmd_update "$@"
     ;;
   status)
     _require_user

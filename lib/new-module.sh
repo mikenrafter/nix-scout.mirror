@@ -8,6 +8,9 @@ MODULES_DIR="${1:?modules directory required}"
 NAME="${2:?module name required}"
 shift 2
 
+# shellcheck source=./scout-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scout-lib.sh"
+
 want_scout=false
 want_home=false
 want_baseline=false
@@ -171,60 +174,7 @@ EOF
 fi
 
 # --- dummy flake.lock (nixpkgs only; placeholder pins) -----------------------
-# narHash is zeros; other locked identity strings are the sentinel below.
-_SENTINEL="nix-scout_not-real-lockfile"
-_NAR="sha256-0000000000000000000000000000000000000000000="
-_REV="0000000000000000000000000000000000000000"
-cat >"$mod_dir/flake.lock" <<EOF
-{
-  "nodes": {
-    "nix-scout": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 0,
-        "narHash": "${_NAR}",
-        "owner": "${_SENTINEL}",
-        "repo": "${_SENTINEL}",
-        "rev": "${_REV}",
-        "type": "github"
-      },
-      "original": {
-        "owner": "mikenrafter",
-        "repo": "nix-scout",
-        "type": "github"
-      }
-    },
-    "nixpkgs": {
-      "locked": {
-        "lastModified": 0,
-        "narHash": "${_NAR}",
-        "owner": "${_SENTINEL}",
-        "repo": "${_SENTINEL}",
-        "rev": "${_REV}",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-26.05",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
-    "root": {
-      "inputs": {
-        "nix-scout": "nix-scout",
-        "nixpkgs": "nixpkgs"
-      }
-    }
-  },
-  "root": "root",
-  "version": 7
-}
-EOF
+write_sentinel_lock "$mod_dir/flake.lock"
 
 echo "nix-scout: created $mod_dir"
 echo "nix-scout: a full nixos-rebuild is required before any flakelet facet can be registered or switched"

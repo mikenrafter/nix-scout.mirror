@@ -9,7 +9,7 @@
 #   module-mode.sh  path-session.sh  activation-clear.sh  flakelet.sh  baseline.sh
 #
 # Integration suites (require nix-scout binary or nix build):
-#   cli.sh  hm-activate-files.sh  materialize.sh  profile-gcroots.sh
+#   cli.sh  hm-activate-files.sh  materialize.sh  profile-gcroots.sh  update-module.sh
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,6 +26,7 @@ suites=(
   hm-activate-files.sh
   materialize.sh
   profile-gcroots.sh
+  update-module.sh
 )
 
 failed=0

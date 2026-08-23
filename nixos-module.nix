@@ -49,6 +49,32 @@ let
     v == "directory" && builtins.pathExists (evalModulesDir + "/${name}/flake.nix")
   ) (builtins.readDir evalModulesDir);
 
+  # Every input a module's flake.nix declares must have a corresponding node
+  # in its own committed flake.lock (see lib/new-module.sh for the sentinel
+  # placeholder new modules are scaffolded with, and lib/update-module.sh /
+  # `nix-scout update` for the tool that keeps this in sync — `nix-scout
+  # switch` also runs it automatically). A module gaining a new declared
+  # input without a matching lock node is a real authoring bug: flakelet's
+  # own bare `path:` evaluation of the module (which never goes through this
+  # nixosModule's input-threading, and has no write access to the module
+  # tree — see flakelet-access.sh) will hit a hard, confusing failure trying
+  # to add the missing node itself. Catch it here instead, at rebuild
+  # eval-time, with a message that names the module and points at the fix.
+  moduleMissingInputs = lib.filterAttrs (_: missing: missing != []) (
+    lib.mapAttrs (name: _:
+      let
+        m = import (evalModulesDir + "/${name}/flake.nix");
+        declared = builtins.attrNames (m.inputs or {});
+        lockFile = evalModulesDir + "/${name}/flake.lock";
+        lockedRootInputs =
+          if builtins.pathExists lockFile
+          then (builtins.fromJSON (builtins.readFile lockFile)).nodes.root.inputs or {}
+          else {};
+      in
+        builtins.filter (i: !(lockedRootInputs ? ${i})) declared
+    ) scoutDirs
+  );
+
   # Evaluate each scout-module's flake outputs (systemRebuild=true context).
   #
   # `inputs` is the parent flake's own full, already-resolved `inputs` attrset
@@ -66,12 +92,21 @@ let
   # declares `inputs.nix-scout`) from flakelet's own runtime evaluation,
   # which never provides `nix-scout` — see the module-authoring convention
   # documented in scout-modules/*/flake.nix.
-  scoutOutputs = lib.mapAttrs (name: _:
-    let
-      m = import (evalModulesDir + "/${name}/flake.nix");
-    in
-      m.outputs (inputs // { nix-scout = nixScout; systemRebuild = true; })
-  ) scoutDirs;
+  scoutOutputs =
+    if moduleMissingInputs != {}
+    then throw (
+      "nix-scout: scout-module flake.lock out of sync with declared inputs:\n"
+      + lib.concatStrings (lib.mapAttrsToList (name: missing:
+          "  ${name}: missing ${lib.concatStringsSep ", " missing} in flake.lock"
+          + " — run `nix-scout update ${name}` (or `nix-scout update all`) and rebuild\n"
+        ) moduleMissingInputs)
+    )
+    else lib.mapAttrs (name: _:
+      let
+        m = import (evalModulesDir + "/${name}/flake.nix");
+      in
+        m.outputs (inputs // { nix-scout = nixScout; systemRebuild = true; })
+    ) scoutDirs;
 
   # Modules exporting `baseline` — a NixOS module, imported directly so it can set
   # arbitrary system-wide options. Only takes effect via nixos-rebuild (this eval);

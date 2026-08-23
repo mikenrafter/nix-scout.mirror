@@ -120,6 +120,71 @@ Install a store path
 or flake installable
 .RI ( ref # attr )
 directly into the scout profile without materializing or building a module.
+.PP
+Before materializing,
+.B switch
+also runs the same input\-sync as
+.B update
+against the module's own directory (non\-fatally \(em a failure is a warning,
+not a switch\-blocking error).
+.TP
+.BI "update " "name|all"
+Sync a module's committed
+.I flake.lock
+structure with its
+.I flake.nix\(aq s
+declared
+.BR inputs .
+Runs
+.BR "nix flake lock" (1)
+in the module directory to discover the graph shape for any input that is
+declared but missing from the lock file, then overwrites
+.B every
+node's
+.B locked
+content (narHash, rev, owner, repo) with the same dummy sentinel
+.B new
+writes for
+.BR nix\-scout / nixpkgs
+(see
+.SX SCOUT MODULES ).
+.B original
+and
+.B inputs
+(follows relationships) are left as real, accurate metadata; only the fetched
+content is scrubbed.
+.RS
+.P
+A scout module's own committed
+.I flake.lock
+is never actually used to resolve anything for real — real resolution always
+comes from the parent flake
+.RI ( "nix\-scout switch" / rebuild
+thread the parent's own already\-resolved inputs directly; flakelet's own
+evaluation of a module only ever draws on the host's nixpkgs) — so nothing in
+it is ever a pin that needs maintaining, and
+.B update
+keeps it looking that way regardless of which input triggered the sync.
+.P
+Use
+.B all
+to sync every module under
+.IR $NIX_SCOUT_MODULES .
+.P
+This exists because flakelet evaluates a registered module's
+.B flake.nix
+directly against its own committed
+.IR flake.lock ,
+with no input overrides and, per
+.IR flakelet\-access.sh ,
+no write access to the module tree. A module whose
+.I flake.lock
+is missing a node for a declared input makes that evaluation try (and fail)
+to write the missing node itself. Keeping the committed lock structurally
+complete ahead of time avoids that failure entirely; see also the eval\-time
+check under
+.SX SCOUT MODULES .
+.RE
 .TP
 .B status
 Show the active scout profile path, each registered gc\-root, and flakelet service status.
@@ -376,6 +441,21 @@ or the same
 import pattern.
 Use this to ship a lightweight stub during rebuild while installing the full payload
 only on explicit switch (e.g. seasonal or space\-heavy tools).
+.PP
+At
+.BR nixos\-rebuild (8)
+eval time, the nix\-scout NixOS module checks every scout module's committed
+.I flake.lock
+against its
+.IR flake.nix\(aq s
+declared
+.B inputs
+and throws a build\-time error naming the module and the missing input(s) if
+any are out of sync (see
+.B update
+above). This turns a silent, hard\-to\-diagnose failure in flakelet's own
+evaluation (which cannot write the missing node itself) into an immediate,
+actionable rebuild error.
 .SH FILES
 .TP
 .I /etc/flakelet/config.json
