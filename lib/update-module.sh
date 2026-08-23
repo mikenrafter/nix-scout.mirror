@@ -101,6 +101,13 @@ jq \
 
 after="$(_canon_hash "$tmp")"
 
+# mktemp creates $tmp mode 0600 (owner-only) regardless of the original
+# file's mode; `mv` onto the same filesystem keeps the source inode's
+# permissions rather than the destination's, so without this the committed
+# flake.lock would silently lose its group/other-read bits on every write —
+# breaking flakelet's (unprivileged eval_user, read-only) access to it.
+chmod --reference="$MODULE_DIR/flake.lock" "$tmp" 2>/dev/null || chmod 644 "$tmp"
+
 # Only touch the committed file (bytes, mtime) when something actually
 # changed — a no-op run of `nix-scout switch` shouldn't dirty git status.
 if [[ "$before" != "$after" ]]; then

@@ -69,6 +69,32 @@ else
   fail "update-module.sh must not rewrite an already-in-sync flake.lock"
 fi
 
+echo "-- update preserves flake.lock permission mode across a real rewrite --"
+# sha256sum (used above) only covers content, not mode — mktemp creates its
+# tmp file 0600 regardless of the target's mode, and `mv` onto the same
+# filesystem keeps the source inode's permissions, not the destination's, so
+# a naive atomic-write would silently strip flake.lock's group/other-read
+# bits on every real update (breaking flakelet's unprivileged, read-only
+# access to it). Force a real content change (nix flake lock itself is a
+# no-op here since every declared input already has a node) so the
+# mv/chmod-preserve path actually executes, not just the no-op branch.
+"$CHMOD" 644 "$MOD/flake.lock"
+"$JQ" '.nodes["nix-scout"].locked.lastModified = 1' "$MOD/flake.lock" >"$WORKDIR/corrupted-lock.json"
+"$CP" "$WORKDIR/corrupted-lock.json" "$MOD/flake.lock"
+"$CHMOD" 644 "$MOD/flake.lock"
+run_capture bash "$UPDATE_LIB" "$MOD"
+if [[ "$CAPTURED_RC" -eq 0 && "$CAPTURED_OUT$CAPTURED_ERR" == *"nix-scout: updated"* ]]; then
+  pass "update-module.sh rewrote the corrupted flake.lock (sanity: real-write path exercised)"
+else
+  fail "expected update-module.sh to rewrite the corrupted lock: rc=$CAPTURED_RC out=$(printf %q "$CAPTURED_OUT$CAPTURED_ERR")"
+fi
+MODE_AFTER="$("$STAT" -c '%a' "$MOD/flake.lock" 2>/dev/null || true)"
+if [[ "$MODE_AFTER" == "644" ]]; then
+  pass "flake.lock keeps mode 644 after a real content rewrite"
+else
+  fail "flake.lock mode changed to '$MODE_AFTER' (want 644) after update — mktemp's 0600 leaked through mv"
+fi
+
 echo "-- update errors clearly on a module with no flake.nix --"
 "$MKDIR" -p "$NIX_SCOUT_MODULES/no-flake"
 run_capture bash "$UPDATE_LIB" "$NIX_SCOUT_MODULES/no-flake"
