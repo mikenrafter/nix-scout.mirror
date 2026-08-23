@@ -50,16 +50,17 @@ let
   ) (builtins.readDir evalModulesDir);
 
   # Every input a module's flake.nix declares must have a corresponding node
-  # in its own committed flake.lock (see lib/new-module.sh for the sentinel
-  # placeholder new modules are scaffolded with, and lib/update-module.sh /
-  # `nix-scout update` for the tool that keeps this in sync — `nix-scout
-  # switch` also runs it automatically). A module gaining a new declared
-  # input without a matching lock node is a real authoring bug: flakelet's
-  # own bare `path:` evaluation of the module (which never goes through this
-  # nixosModule's input-threading, and has no write access to the module
-  # tree — see flakelet-access.sh) will hit a hard, confusing failure trying
-  # to add the missing node itself. Catch it here instead, at rebuild
-  # eval-time, with a message that names the module and points at the fix.
+  # in its own committed flake.lock (see lib/update-module.sh / `nix-scout
+  # update` — a module's lock is a straight copy of the host's own
+  # flake.lock, kept in sync by `sync_lock_from_parent`; `nix-scout switch`
+  # also runs it automatically). A module gaining a new declared input the
+  # host itself doesn't also declare (so the copy can't cover it) is a real
+  # authoring bug: flakelet's own bare `path:` evaluation of the module
+  # (which never goes through this nixosModule's input-threading, and has
+  # no write access to the module tree — see flakelet-access.sh) will hit a
+  # hard, confusing failure trying to add the missing node itself. Catch it
+  # here instead, at rebuild eval-time, with a message that names the
+  # module and points at the fix.
   moduleMissingInputs = lib.filterAttrs (_: missing: missing != []) (
     lib.mapAttrs (name: _:
       let
@@ -75,25 +76,20 @@ let
     ) scoutDirs
   );
 
-  # Same facet-detection convention as bin/nix-scout's own _switch_module /
-  # _facet_tags — a flake.nix text search, not a Nix eval.
-  moduleHasFlakeletFacet = name:
-    lib.hasInfix "flakelets." (builtins.readFile (evalModulesDir + "/${name}/flake.nix"));
-
-  # A module with a flakelet facet is evaluated by flakelet directly against
-  # its own committed flake.lock, with no override for anything but its own
-  # injected pkgs argument — and after every successful build, `flakelet
-  # update` unconditionally runs `nix flake archive` to gc-root the flake
-  # source *and all its inputs* for offline re-evaluation (flakelet-core's
-  # `manager.rs`, `flake_roots`), which eagerly fetches every node in the
-  # lock graph regardless of whether anything actually dereferences its
-  # content. So for such a module, NO node may be the dummy sentinel
-  # (`nix-scout new`'s placeholder is only ever safe for a module with no
-  # flakelet facet at all — see lib/update-module.sh's header comment for
-  # the full reasoning, confirmed against a real build's `--show-trace`).
-  moduleDummyNodesUnderFlakelet = lib.filterAttrs (_: dummy: dummy != []) (
+  # There is no dummy/placeholder lock scheme anymore — a module's lock is
+  # always meant to be a straight copy of the host's own flake.lock (see
+  # lib/update-module.sh). Any leftover sentinel content (from an
+  # old-style scaffold, or manual tampering) is unconditionally wrong now:
+  # flakelet evaluates a registered module directly against its own
+  # committed lock with no override beyond its own injected pkgs argument,
+  # and after every successful build unconditionally runs `nix flake
+  # archive` to gc-root the flake source *and all its inputs* for offline
+  # re-evaluation (flakelet-core's `manager.rs`, `flake_roots`), which
+  # eagerly fetches every node in the lock graph regardless of whether
+  # anything actually dereferences its content — confirmed against a real
+  # build's `--show-trace` and a live `nix flake archive` run.
+  moduleDummyNodes = lib.filterAttrs (_: dummy: dummy != []) (
     lib.mapAttrs (name: _:
-      if !(moduleHasFlakeletFacet name) then [] else
       let
         lockFile = evalModulesDir + "/${name}/flake.lock";
         nodes =
@@ -125,18 +121,18 @@ let
   # which never provides `nix-scout` — see the module-authoring convention
   # documented in scout-modules/*/flake.nix.
   scoutOutputs =
-    if moduleMissingInputs != {} || moduleDummyNodesUnderFlakelet != {}
+    if moduleMissingInputs != {} || moduleDummyNodes != {}
     then throw (
-      "nix-scout: scout-module flake.lock out of sync with declared inputs:\n"
+      "nix-scout: scout-module flake.lock out of sync with the host's:\n"
       + lib.concatStrings (lib.mapAttrsToList (name: missing:
           "  ${name}: missing ${lib.concatStringsSep ", " missing} in flake.lock"
           + " — run `nix-scout update ${name}` (or `nix-scout update all`) and rebuild\n"
         ) moduleMissingInputs)
       + lib.concatStrings (lib.mapAttrsToList (name: dummy:
-          "  ${name}: flakelet facet but dummy/placeholder content for ${lib.concatStringsSep ", " dummy} in flake.lock"
-          + " — flakelet fetches every input for real regardless of facet gating;"
+          "  ${name}: leftover dummy/placeholder content for ${lib.concatStringsSep ", " dummy} in flake.lock"
+          + " — a module's lock should mirror the host's, not a placeholder;"
           + " run `nix-scout update ${name}` (or `nix-scout update all`) and rebuild\n"
-        ) moduleDummyNodesUnderFlakelet)
+        ) moduleDummyNodes)
     )
     else lib.mapAttrs (name: _:
       let

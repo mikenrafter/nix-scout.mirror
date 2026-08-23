@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Copy a scout module flake to /tmp and stamp it with the parent flake.lock.
-# Modules carry no committed flake.lock; the parent lock is the authoritative pin.
+# A module's own committed flake.lock (see lib/update-module.sh) is itself
+# just a copy of the parent's, kept in sync by `nix-scout update`/`switch`;
+# the parent's lock is always the authoritative source — this re-stamps it
+# fresh at materialize time regardless, so a build never depends on the
+# module's committed copy having been synced recently.
 # Prints the materialized directory path on stdout.
 set -euo pipefail
 

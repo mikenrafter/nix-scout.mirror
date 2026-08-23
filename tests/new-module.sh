@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# nix-scout new: scaffold facet-separated scout modules + dummy lock + rebuild hint.
+# nix-scout new: scaffold facet-separated scout modules + flake.lock copied
+# from the host (NIX_SCOUT_PARENT) + rebuild hint.
 set -euo pipefail
 
 # shellcheck source=_lib.sh
@@ -65,11 +66,22 @@ for token in '# scout' '# home' '# flakelet' 'optionalAttrs (inputs ? nix-scout)
 done
 
 lock="$mod/flake.lock"
-if "$GREP" -q 'sha256-0000000000000000000000000000000000000000000=' "$lock" \
-  && "$GREP" -q 'nix-scout_not-real-lockfile' "$lock"; then
-  pass "dummy flake.lock uses zero narHash + nix-scout_not-real-lockfile"
+# The host's lock is a superset of what any module declares; sync_lock_from_parent
+# prunes it down (via `nix flake metadata`) to what this module actually
+# references, so it won't be byte-identical to the host's — check the
+# nix-scout/nixpkgs nodes have real (non-placeholder) content sourced from
+# the host instead.
+NS_OWNER="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$lock")"
+NP_OWNER="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$lock")"
+if [[ "$NS_OWNER" == "mikenrafter" && "$NP_OWNER" == "NixOS" ]]; then
+  pass "flake.lock has real content from the host (nix-scout=mikenrafter, nixpkgs=NixOS)"
 else
-  fail "dummy flake.lock pins incorrect; got $(printf %q "$("$HEAD" -c 400 "$lock")")"
+  fail "expected real host-sourced content, got nix-scout owner='$NS_OWNER' nixpkgs owner='$NP_OWNER'"
+fi
+if "$JQ" -e '.nodes | to_entries | all(.value.locked.owner != "nix-scout_not-real-lockfile")' "$lock" >/dev/null; then
+  pass "no dummy/placeholder content anywhere in the scaffolded lock"
+else
+  fail "scaffolded flake.lock should never contain the dummy sentinel anymore"
 fi
 
 echo "-- scout+home leaves empty flakelet section --"

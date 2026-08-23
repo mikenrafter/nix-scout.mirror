@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Generate a scout-module directory with facet-separated flake.nix (+ optional settings.nix, dummy flake.lock).
+# Generate a scout-module directory with facet-separated flake.nix (+ optional
+# settings.nix, flake.lock copied from the host — see sync_lock_from_parent
+# in scout-lib.sh). Requires NIX_SCOUT_PARENT (a directory with a flake.lock)
+# in the environment.
 # Usage: new-module.sh <modules-dir> <name> [facet...]
 # Facets: scout | home | baseline | flakelet  (any subset; all four sections always present in flake.nix)
 set -euo pipefail
@@ -173,8 +176,11 @@ if [[ "$want_flakelet" == "true" ]]; then
 EOF
 fi
 
-# --- dummy flake.lock (nixpkgs only; placeholder pins) -----------------------
-write_sentinel_lock "$mod_dir/flake.lock"
+# --- flake.lock (copied from the host — see scout-lib.sh) --------------------
+sync_lock_from_parent "$mod_dir" || {
+  echo "nix-scout new: created $mod_dir but could not write flake.lock — run \`nix-scout update $NAME\` once NIX_SCOUT_PARENT/flake.lock is available" >&2
+  exit 1
+}
 
 echo "nix-scout: created $mod_dir"
 echo "nix-scout: a full nixos-rebuild is required before any flakelet facet can be registered or switched"

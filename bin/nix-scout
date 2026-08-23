@@ -83,22 +83,19 @@ Usage:
 NIX-FLAGS are forwarded to 'nix build' (e.g. --show-trace, --option foo bar).
 Flags may appear before or after <name>, or after -- for flags that take arguments.
 
-'nix-scout update' runs 'nix flake lock' against a module directory to add any
-input node flake.nix declares but flake.lock lacks, then branches on whether
-the module has a flakelet facet:
-  no flakelet facet   nix-scout AND nixpkgs stay the dummy sentinel 'new'
-                       writes; nothing real ever touches this module's own
-                       lock (switch/rebuild always thread the parent's own
-                       resolved inputs instead) -- every OTHER declared
-                       input still resolves for real.
-  has flakelet facet  EVERY node is forced real, including nix-scout: after
-                       every build, flakelet's own 'nix flake archive' eagerly
-                       fetches the whole lock graph regardless of whether
-                       anything dereferences a node's content, and its only
-                       override is for its own injected pkgs argument -- so
-                       nothing here can be a dummy placeholder.
-'switch' runs this sync automatically (non-fatally) before materializing, so
-newly-declared inputs are kept in sync without a separate manual step.
+'nix-scout update' syncs a module's committed flake.lock from NIX_SCOUT_PARENT's
+own flake.lock (the same starting point materialize-module.sh already uses
+for tmpdir builds at switch time), pruned down via 'nix flake metadata' to
+exactly what the module's flake.nix references -- the host's lock is a
+superset of what any module needs, and a real 'nix flake' command rewrites a
+lock with unreferenced extra nodes in place same as it would add a missing
+one, so an unpruned copy would make flakelet's own read-only eval_user hit
+the exact permission failure this tool exists to prevent, just from the
+opposite direction. A module's own lock is never independently resolved --
+it just mirrors the relevant slice of the host's; 'nix-scout new' does the
+same at scaffold time. 'switch' runs this sync automatically (non-fatally)
+before materializing, so a module that's fallen out of sync with the host is
+kept current without a separate manual step.
 
 Facets: a scout module may export any combination of:
   profile     packages.<system>.scout with bin/  — installed into scout nix profile
@@ -172,7 +169,8 @@ cmd_new() {
   shift
   local modules
   modules="$(_resolve_modules)"
-  bash "$(_scout_lib new-module.sh)" "$modules" "$name" "$@"
+  env NIX_SCOUT_PARENT="$(_resolve_parent)" \
+    bash "$(_scout_lib new-module.sh)" "$modules" "$name" "$@"
 }
 
 cmd_list() {
@@ -197,8 +195,9 @@ cmd_update() {
     usage >&2
     exit 1
   fi
-  local modules
+  local modules parent
   modules="$(_resolve_modules)"
+  parent="$(_resolve_parent)"
 
   if [[ "$name" == "all" ]]; then
     if [[ ! -d "$modules" ]]; then
@@ -210,7 +209,8 @@ cmd_update() {
       [[ -d "$dir" && -f "$dir/flake.nix" ]] || continue
       mod_name="$(basename "$dir")"
       echo "nix-scout: update $mod_name" >&2
-      bash "$(_scout_lib update-module.sh)" "$dir" || rc=$?
+      env NIX_SCOUT_PARENT="$parent" \
+        bash "$(_scout_lib update-module.sh)" "$dir" || rc=$?
     done
     return $rc
   fi
@@ -220,7 +220,8 @@ cmd_update() {
     echo "nix-scout: module not found: $name (expected $mod_dir/flake.nix)" >&2
     exit 1
   fi
-  bash "$(_scout_lib update-module.sh)" "$mod_dir"
+  env NIX_SCOUT_PARENT="$parent" \
+    bash "$(_scout_lib update-module.sh)" "$mod_dir"
 }
 
 _switch_module() {
@@ -237,7 +238,8 @@ _switch_module() {
     exit 1
   fi
 
-  bash "$(_scout_lib update-module.sh)" "$mod_dir" >&2 \
+  env NIX_SCOUT_PARENT="$(_resolve_parent)" \
+    bash "$(_scout_lib update-module.sh)" "$mod_dir" >&2 \
     || echo "nix-scout: warning: flake.lock sync failed for $name — continuing with existing lock" >&2
 
   grep -qE '[^#]*(packages\.|\.scout)' "$mod_dir/flake.nix" 2>/dev/null && has_pkg=true
