@@ -67,8 +67,18 @@ with the standard facet separation:
 Requested facets get stub implementations; omitted facets keep only the denoting comment.
 Also writes a placeholder
 .I flake.lock
-(nixpkgs narHash of zeros; other locked identity fields set to
-.BR nix\-scout_not\-real\-lockfile ).
+(both nix\-scout and nixpkgs narHash of zeros; other locked identity fields
+set to
+.BR nix\-scout_not\-real\-lockfile ,
+for an instant, offline scaffold). The nixpkgs placeholder is temporary: the
+first
+.B update
+or
+.B switch
+against the module promotes it to a real, fetched pin — nix\-scout is the
+only node that stays dummy permanently (see
+.B update
+below).
 When
 .B flakelet
 is requested, also writes
@@ -137,47 +147,88 @@ declared
 .BR inputs .
 Runs
 .BR "nix flake lock" (1)
-in the module directory to discover the graph shape for any input that is
-declared but missing from the lock file, then overwrites
-.B every
+in the module directory to add any input node that is declared but missing
+from the lock file (resolved for real — see below), forces
+.B nixpkgs
+to real content if it is still the scaffold\-time dummy
+.RB ( "nix flake lock --update-input nixpkgs" ,
+since plain
+.B "nix flake lock"
+never re\-resolves a node that is already present), then overwrites only the
+.B nix\-scout
 node's
 .B locked
 content (narHash, rev, owner, repo) with the same dummy sentinel
 .B new
-writes for
-.BR nix\-scout / nixpkgs
-(see
+writes for it (see
 .SX SCOUT MODULES ).
 .B original
 and
 .B inputs
-(follows relationships) are left as real, accurate metadata; only the fetched
-content is scrubbed.
+(follows relationships) are always left as real, accurate metadata; every
+.I other
+declared input's fetched content — including nixpkgs — is left exactly as
+resolved.
 .RS
 .P
-A scout module's own committed
-.I flake.lock
-is never actually used to resolve anything for real — real resolution always
-comes from the parent flake
-.RI ( "nix\-scout switch" / rebuild
-thread the parent's own already\-resolved inputs directly; flakelet's own
-evaluation of a module only ever draws on the host's nixpkgs) — so nothing in
-it is ever a pin that needs maintaining, and
-.B update
-keeps it looking that way regardless of which input triggered the sync.
+Only
+.BR nix\-scout \(aqs
+content is ever safe to fake: it is never dereferenced by anything on any
+evaluation path (a module's own
+.B outputs
+only ever tests
+.B "inputs ? nix\-scout"
+for existence, never touches its content; real resolution always comes from
+the parent flake — see
+.SX SCOUT MODULES ).
+.B nixpkgs
+looks like the same kind of "framework" input at scaffold time but is not:
+every module the
+.B new
+template scaffolds does
+.B "lib = nixpkgs.lib;"
+at the very top of
+.BR outputs ,
+unconditionally forced the instant anything calls
+.B outputs
+for real — before any facet gate is even reached. Confirmed directly via
+.B "nix build path:<module>#scout --show-trace" :
+the forced fetch chain is
+.BR "outputs \(-> nixpkgs.result \(-> import \(-> fetchFinalTree" .
+Every other input a module declares must likewise stay real: flakelet
+evaluates a registered module's flake directly via
+.B builtins.getFlake
+and actually calls its
+.BR impl ,
+forcing whatever any input it touches resolves to through the module's own
+committed
+.IR flake.lock .
+flakelet's only override mechanism
+.RB ( input_overrides
+in its own config) is hard\-restricted to the key
+.B nixpkgs
+— a separate substitution of the
+.B pkgs
+.I argument
+flakelet injects itself, structurally unrelated to a flake's own declared
+inputs — so there is no way to fake any input this way; doing so does not
+fail closed, it 404s flakelet's real build fetching the sentinel's fake repo.
 .P
 Use
 .B all
 to sync every module under
 .IR $NIX_SCOUT_MODULES .
 .P
-This exists because flakelet evaluates a registered module's
-.B flake.nix
-directly against its own committed
-.IR flake.lock ,
-with no input overrides and, per
+This also exists because flakelet's evaluation of a registered module runs
+plain
+.B "nix flake metadata"
+against its own committed
+.I flake.lock
+with no
+.B \-\-no\-write\-lock\-file ,
+and, per
 .IR flakelet\-access.sh ,
-no write access to the module tree. A module whose
+its eval user has no write access to the module tree. A module whose
 .I flake.lock
 is missing a node for a declared input makes that evaluation try (and fail)
 to write the missing node itself. Keeping the committed lock structurally

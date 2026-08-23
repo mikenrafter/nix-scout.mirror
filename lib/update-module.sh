@@ -1,26 +1,46 @@
 #!/usr/bin/env bash
 # Sync a scout module's committed flake.lock structure with its flake.nix-
-# declared inputs, while keeping every node's content fully dummy.
+# declared inputs, while keeping the nix-scout framework node dummy.
 #
-# A scout module's own committed flake.lock is never actually used to resolve
-# anything for real: nix-scout switch/rebuild always threads the parent
-# flake's own already-resolved inputs (materialize-module.sh stamps the
-# parent's flake.lock over the module's before building), and flakelet's own
-# path: evaluation of a module only ever draws on the host's own nixpkgs. So
-# nothing in a module's own flake.lock is ever actually fetched by its
-# recorded rev/narHash — the file exists purely so `nix flake`-family tooling
-# (and flakelet's own lock bookkeeping) sees a structurally complete graph and
-# doesn't attempt to add a node itself (which is what caused the original
-# bug: flakelet's eval_user has no write access to the module tree — see
-# lib/flakelet-access.sh — so an add-on-the-fly attempt fails outright).
+# nix-scout is the only input whose committed content is never actually used
+# for real: nix-scout switch/rebuild always threads the parent flake's own
+# already-resolved inputs instead (materialize-module.sh stamps the parent's
+# flake.lock over the module's before building), and a module's own
+# flake.nix never dereferences it beyond an `inputs ? nix-scout` existence
+# check (see scout-modules/*/flake.nix convention) — confirmed empirically:
+# `nix build path:<module>#scout --show-trace` never touches nix-scout's
+# content. So keeping it as the dummy sentinel lib/new-module.sh writes is
+# always safe, on any evaluation path.
 #
-# `nix flake lock` is used internally only to *discover* that structure (which
-# nodes exist, their `original`/`inputs` follows) for any input flake.nix
-# declares that isn't already in the lock — real network resolution happens
-# here to learn the graph shape, then every node's `locked` block is
-# overwritten with the same dummy sentinel lib/new-module.sh already uses for
-# nix-scout/nixpkgs, so nothing in the committed file ever looks like a real
-# pin that needs maintaining.
+# nixpkgs is NOT in the same category, despite scaffolding alongside
+# nix-scout as a "framework" input — every scout module's `outputs` does
+# `lib = nixpkgs.lib;` at the very top, unconditionally forced the instant
+# anything calls `outputs` for real, before any facet gate is even reached.
+# `nix build path:<module>#scout --show-trace` confirms this directly: the
+# forced fetch chain is `outputs -> nixpkgs.result -> import -> fetchFinalTree`.
+# nixpkgs must always resolve to real, fetchable content.
+#
+# Every OTHER declared input (e.g. a module pulling its own CLI straight from
+# an upstream flake) must likewise stay real: flakelet evaluates a registered
+# module's flake directly via `builtins.getFlake` and actually calls its
+# `impl`, forcing whatever that input resolves to via the module's own
+# committed flake.lock — there is no override mechanism for it (flakelet's
+# `input_overrides` only supports the key "nixpkgs", which is a separate
+# `pkgs`-*argument* substitution flakelet injects itself, structurally
+# unrelated to a flake's own declared inputs; verified against
+# flakelet-core's source directly). Handing any of this a dummy, unfetchable
+# sentinel does not fail closed quietly — it 404s flakelet's real build.
+#
+# `nix flake lock` is used to discover the graph structure (which nodes
+# exist, their `original`/`inputs` follows) for any input flake.nix declares
+# that isn't already in the lock. Because it never re-resolves a node that's
+# already present, a pre-existing dummy nixpkgs (e.g. from the `nix-scout
+# new` scaffold, or the bootstrap pre-seed below) needs an explicit
+# `--update-input nixpkgs` to force it to real content — plain `nix flake
+# lock` alone would leave it dummy forever. Only the nix-scout node — found
+# via root.inputs, not by literal key name, since a colliding transitive
+# input can rename it — gets its `locked` block scrubbed back to the dummy
+# sentinel afterward.
 #
 # Usage: update-module.sh <module-dir>
 set -euo pipefail
@@ -48,7 +68,8 @@ fi
 # `nix-scout new`, or the lock was lost) with the standard dummy skeleton
 # before running `nix flake lock` below, purely to avoid an unnecessary real
 # fetch of nix-scout's own (sizeable) transitive graph just to learn a shape
-# that gets scrubbed to dummy content a few lines down anyway.
+# that gets scrubbed to dummy content a few lines down anyway. nixpkgs gets
+# forced to real content regardless a few steps later.
 if [[ ! -f "$MODULE_DIR/flake.lock" ]]; then
   # `import "<string>"` requires an absolute path under --impure; a relative
   # MODULE_DIR would silently fail to eval (nix path literals, not strings,
@@ -73,11 +94,22 @@ before="$(_canon_hash "$MODULE_DIR/flake.lock")"
 
 (cd "$MODULE_DIR" && nix flake lock)
 
-# Scrub every node's `locked` block (the only part that ever records real
-# fetched content) to the same dummy sentinel lib/new-module.sh writes.
-# `original` and `inputs` (follows relationships) are real structural
-# metadata — never fetched, always worth keeping accurate — and are left
-# untouched.
+# Force nixpkgs to real content if it's declared but still the dummy
+# sentinel (scaffold-fresh, or bootstrapped above) — see header comment for
+# why plain `nix flake lock` above never touches an already-present node.
+if jq -e '.nodes.root.inputs | has("nixpkgs")' "$MODULE_DIR/flake.lock" >/dev/null 2>&1; then
+  np_owner="$(jq -r '.nodes[.nodes.root.inputs.nixpkgs].locked.owner // ""' "$MODULE_DIR/flake.lock")"
+  if [[ "$np_owner" == "nix-scout_not-real-lockfile" ]]; then
+    (cd "$MODULE_DIR" && nix flake lock --update-input nixpkgs)
+  fi
+fi
+
+# Scrub only the node root.inputs["nix-scout"] actually points to back to the
+# dummy sentinel — looked up by the root-input mapping, not by literal node
+# key, since a colliding transitive input can rename it. Every other node is
+# left exactly as resolved: real, fetchable content. `original`/`inputs`
+# (follows relationships) are always left untouched; only `locked` (fetched
+# content) is ever scrubbed.
 tmp="$(mktemp "${MODULE_DIR}/.flake.lock.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 jq \
@@ -85,9 +117,9 @@ jq \
   --arg sentinel "nix-scout_not-real-lockfile" \
   --arg rev "0000000000000000000000000000000000000000" \
   '
+  (.nodes.root.inputs["nix-scout"] // "") as $nsKey |
   .nodes |= with_entries(
-    if .key == "root" then .
-    else
+    if (.key == $nsKey and $nsKey != "") then
       .value.locked |= (
         .lastModified = 0
         | .narHash = $nar
@@ -95,7 +127,7 @@ jq \
         | (if has("repo") then .repo = $sentinel else . end)
         | (if has("rev") then .rev = $rev else . end)
       )
-    end
+    else . end
   )
   ' "$MODULE_DIR/flake.lock" > "$tmp"
 

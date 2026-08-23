@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # update-module.sh / `nix-scout update`: sync a module's committed flake.lock
-# with its flake.nix-declared inputs via `nix flake lock` (add-only — never
-# touches nodes already present, so the dummy sentinel nix-scout/nixpkgs
-# nodes written by new-module.sh stay dummy). Covers the local/no-network
-# contract (no-op when already in sync, error paths); resolving a genuinely
-# new real input requires network and is exercised manually against a real
-# module (e.g. `nix-scout update claude-code-proxy` in phoe-nix), not here.
+# with its flake.nix-declared inputs. Only the nix-scout framework node stays
+# the dummy sentinel new-module.sh writes — nixpkgs and every other declared
+# input are always real (see lib/update-module.sh's header comment for why:
+# nixpkgs.lib is unconditionally forced by every scaffolded module's
+# `outputs`, and flakelet has no override for anything but its own injected
+# pkgs). A freshly-scaffolded module's nixpkgs starts dummy, so its *first*
+# `nix-scout update` legitimately does a real network fetch to promote it —
+# only the *second* run onward is a true no-op. Covers that contract, a
+# non-framework real input via a local path: stand-in (no network needed for
+# that part), and the error/permission paths. Requires network for the
+# nixpkgs promotion itself; a genuinely new non-framework *network* input is
+# exercised manually against a real module (e.g. `nix-scout update
+# claude-code-proxy` in phoe-nix), not here.
 #
 # Run from repo root:
 #   modules/nix-scout/tests/update-module.sh
@@ -49,11 +56,32 @@ if [[ "$CAPTURED_RC" -ne 0 ]]; then
 fi
 MOD="$NIX_SCOUT_MODULES/sync-example"
 
-echo "-- update is a no-op when flake.lock already covers every declared input --"
-BEFORE_SUM="$("$SHA256SUM" "$MOD/flake.lock")"
+echo "-- first update on a fresh scaffold promotes nixpkgs to real, nix-scout stays dummy --"
 run_capture bash "$UPDATE_LIB" "$MOD"
 if [[ "$CAPTURED_RC" -eq 0 ]]; then
-  pass "update-module.sh exit 0 on in-sync module"
+  pass "update-module.sh exit 0 on first run against a fresh scaffold"
+else
+  fail "update-module.sh failed on a fresh scaffold: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
+fi
+NS_OWNER="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$MOD/flake.lock")"
+NP_OWNER="$("$JQ" -r '.nodes[(.nodes.root.inputs.nixpkgs)].locked.owner // "MISSING"' "$MOD/flake.lock")"
+if [[ "$NS_OWNER" == "nix-scout_not-real-lockfile" ]]; then
+  pass "nix-scout stays the dummy sentinel"
+else
+  fail "nix-scout must stay dummy, got owner='$NS_OWNER'"
+fi
+if [[ "$NP_OWNER" == "NixOS" ]]; then
+  pass "nixpkgs was promoted to real content"
+else
+  fail "nixpkgs must be real after the first update, got owner='$NP_OWNER'"
+fi
+
+echo "-- a second update is a true no-op (nixpkgs already real, nothing missing) --"
+BEFORE_SUM="$("$SHA256SUM" "$MOD/flake.lock")"
+MTIME_BEFORE="$("$STAT" -c '%Y' "$MOD/flake.lock")"
+run_capture bash "$UPDATE_LIB" "$MOD"
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "update-module.sh exit 0 on second (in-sync) run"
 else
   fail "update-module.sh should exit 0 on an in-sync module: $(printf %q "$CAPTURED_ERR")"
 fi
@@ -63,10 +91,54 @@ else
   fail "expected an 'already up to date' message, got $(printf %q "$CAPTURED_OUT$CAPTURED_ERR")"
 fi
 AFTER_SUM="$("$SHA256SUM" "$MOD/flake.lock")"
-if [[ "$BEFORE_SUM" == "$AFTER_SUM" ]]; then
-  pass "in-sync flake.lock is byte-identical after update (dummy sentinel untouched)"
+MTIME_AFTER="$("$STAT" -c '%Y' "$MOD/flake.lock")"
+if [[ "$BEFORE_SUM" == "$AFTER_SUM" && "$MTIME_BEFORE" == "$MTIME_AFTER" ]]; then
+  pass "in-sync flake.lock is byte-identical and untouched (mtime) on the second run"
 else
   fail "update-module.sh must not rewrite an already-in-sync flake.lock"
+fi
+
+echo "-- update resolves a non-framework input for real too --"
+# A local path: input stands in for a real network input (e.g. llm-agents)
+# without requiring further network access in this suite. It must come back
+# with real (non-sentinel) locked content — flakelet has no way to fake any
+# input but its own injected pkgs (see lib/update-module.sh), so a dummy
+# sentinel there would make flakelet's real build 404 fetching a fake repo.
+"$MKDIR" -p "$WORKDIR/tiny-flake"
+cat >"$WORKDIR/tiny-flake/flake.nix" <<'EOF'
+{ outputs = _: { }; }
+EOF
+"$GREP" -q 'inputs.nixpkgs.url' "$MOD/flake.nix" || {
+  fail "scaffolded flake.nix missing expected inputs.nixpkgs.url line"
+  finish_suite
+}
+TMP_FLAKE="$WORKDIR/patched-flake.nix"
+"$CAT" "$MOD/flake.nix" | while IFS= read -r line; do
+  printf '%s\n' "$line"
+  if [[ "$line" == *'inputs.nixpkgs.url'* ]]; then
+    printf '  inputs.tiny.url = "path:%s";\n' "$WORKDIR/tiny-flake"
+  fi
+done >"$TMP_FLAKE"
+"$CP" "$TMP_FLAKE" "$MOD/flake.nix"
+
+run_capture bash "$UPDATE_LIB" "$MOD"
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "update-module.sh resolves the new real input successfully"
+else
+  fail "update-module.sh failed on a module with a real extra input: $(printf %q "$CAPTURED_ERR$CAPTURED_OUT")"
+fi
+
+TINY_NAR="$("$JQ" -r '.nodes.tiny.locked.narHash // "MISSING"' "$MOD/flake.lock")"
+if [[ "$TINY_NAR" != "MISSING" && "$TINY_NAR" != "sha256-0000000000000000000000000000000000000000000=" ]]; then
+  pass "non-framework input (tiny) resolved to real, non-sentinel content"
+else
+  fail "expected a real narHash for the 'tiny' input, got '$TINY_NAR'"
+fi
+NS_OWNER2="$("$JQ" -r '.nodes["nix-scout"].locked.owner // "MISSING"' "$MOD/flake.lock")"
+if [[ "$NS_OWNER2" == "nix-scout_not-real-lockfile" ]]; then
+  pass "nix-scout stays dummy alongside a real extra input"
+else
+  fail "nix-scout must stay dummy: got owner='$NS_OWNER2'"
 fi
 
 echo "-- update preserves flake.lock permission mode across a real rewrite --"
