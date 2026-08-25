@@ -6,7 +6,8 @@
 #   tests/run.sh
 #
 # Static suites (grep-only, no build needed):
-#   module-mode.sh  path-session.sh  activation-clear.sh  flakelet.sh  baseline.sh
+#   module-mode.sh  path-session.sh  activation-clear.sh  activation-home-files.sh
+#   flakelet.sh  baseline.sh
 #
 # Integration suites (require nix-scout binary or nix build):
 #   cli.sh  hm-activate-files.sh  materialize.sh  profile-gcroots.sh  update-module.sh
@@ -18,6 +19,7 @@ suites=(
   module-mode.sh
   path-session.sh
   activation-clear.sh
+  activation-home-files.sh
   flakelet.sh
   baseline.sh
   cli.sh

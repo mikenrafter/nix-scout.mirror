@@ -45,7 +45,7 @@
 
     packages.${system}.nix-scout = pkgs.stdenv.mkDerivation {
       pname = "nix-scout";
-      version = "0.5.0";
+      version = "0.6.0";
       src = ./.;
       dontBuild = true;
       installPhase = ''
@@ -95,6 +95,7 @@
         bash "$NIX_SCOUT_ROOT/tests/module-mode.sh"
         bash "$NIX_SCOUT_ROOT/tests/path-session.sh"
         bash "$NIX_SCOUT_ROOT/tests/activation-clear.sh"
+        bash "$NIX_SCOUT_ROOT/tests/activation-home-files.sh"
         bash "$NIX_SCOUT_ROOT/tests/flakelet.sh"
         bash "$NIX_SCOUT_ROOT/tests/new-module.sh"
         bash "$NIX_SCOUT_ROOT/tests/baseline.sh"

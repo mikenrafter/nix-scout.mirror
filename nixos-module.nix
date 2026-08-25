@@ -148,14 +148,25 @@ let
     lib.filterAttrs (_: out: out ? baseline) scoutOutputs
   );
 
-  # Prebuild only modules that expose packages.<system>.scout.
-  prebuiltModules = lib.mapAttrsToList (_: out: out.packages.${pkgs.system}.scout) (
-    lib.filterAttrs (_: out:
-      (out ? packages)
-      && (out.packages ? ${pkgs.system})
-      && (out.packages.${pkgs.system} ? scout)
-    ) scoutOutputs
-  );
+  # Modules exposing packages.<system>.scout — prebuilt into systemPackages
+  # below, and (when the derivation carries a home-files/ subdirectory)
+  # copied into every normal user's $HOME on each rebuild via
+  # nix-scout-home-files below, the same way `nix-scout switch <name>`
+  # applies the `home` facet by hand.
+  scoutPackageModules = lib.filterAttrs (_: out:
+    (out ? packages)
+    && (out.packages ? ${pkgs.system})
+    && (out.packages.${pkgs.system} ? scout)
+  ) scoutOutputs;
+
+  prebuiltModules = lib.mapAttrsToList (_: out: out.packages.${pkgs.system}.scout) scoutPackageModules;
+
+  # name kept alongside the store path so nix-scout-home-files can pass it
+  # through to apply-hm.sh for its log line, same as `nix-scout switch` does.
+  homeFilesModules = lib.mapAttrsToList (name: out: {
+    inherit name;
+    store = out.packages.${pkgs.system}.scout;
+  }) scoutPackageModules;
 
   # Import settings.nix for each module that exports flakelets and build the
   # services.flakelets.services attrset.  Missing settings.nix is a hard error.
@@ -243,6 +254,30 @@ in
       EOF
       chmod 644 /var/lib/nix-scout/paths
     '';
+  };
+
+  # The `home` facet used to only land on disk via an explicit
+  # `nix-scout switch <name>` — a full `nixos-rebuild switch` prebuilt the
+  # package (above) but never copied its home-files/ tree into $HOME, so a
+  # module's binary could be on PATH while its config was silently missing.
+  # Run apply-hm.sh (the same script `switch` uses) for every module that
+  # carries a home-files/ subdirectory, for every normal user, on each
+  # rebuild — via runuser so files land owned by that user, not root.
+  # Non-fatal per module/user so one broken module can't fail the rebuild.
+  system.activationScripts.nix-scout-home-files = {
+    text = lib.concatMapStrings (user:
+      let home = config.users.users.${user}.home; in
+      lib.concatMapStrings (m: ''
+        if [[ -d ${lib.escapeShellArg "${m.store}/home-files"} ]]; then
+          ${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg user} -- \
+            ${pkgs.coreutils}/bin/env HOME=${lib.escapeShellArg home} \
+            ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/apply-hm.sh \
+              ${lib.escapeShellArg m.store} ${lib.escapeShellArg m.name} \
+          || echo "nix-scout: home-files apply failed for ${m.name} (user ${user})" >&2
+        fi
+      '') homeFilesModules
+    ) normalUserNames;
+    deps = [ "users" ];
   };
 
   system.activationScripts.nix-scout-dirs = {

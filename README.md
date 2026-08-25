@@ -22,7 +22,10 @@ into `$HOME`, or (de)register a systemd service — without running a full
   - `scout` — `packages.<system>.scout`, installed into a dedicated
     per-user Nix profile (`bin/` subdirectory).
   - `home` — also part of `packages.<system>.scout`, via a `home-files/`
-    subdirectory copied verbatim into `$HOME`.
+    subdirectory copied verbatim into `$HOME`. Applied both by
+    `nix-scout switch <name>` and, automatically for every normal user, by
+    a real `nixos-rebuild` — no separate switch needed to get a module's
+    config onto disk once its `home-files/` is built.
   - `flakelet` — `flakelets.<attr>`, a [flakelet](https://github.com/Mic92/flakelet)
     systemd unit, applied on `nixos-rebuild` and refreshed on switch.
   - `baseline` — a real NixOS module (function or attrset), imported directly
@@ -72,9 +75,12 @@ On activation this writes `/var/lib/nix-scout/paths` (`NIX_SCOUT_PARENT`,
 `NIX_SCOUT_MODULES`), which the `nix-scout` CLI reads at runtime — without
 it, every subcommand exits with a pointer back to this step. It also wires
 `environment.systemPackages` to prebuild any module exporting `scout`,
-registers `flakelet` facets into `services.flakelets`, and (via a forced
-Home Manager shared module) puts the scout profile's `bin/`, `share`, and
-man path ahead of the stale system copies for fish/bash/zsh.
+copies every module's `home-files/` into each normal user's `$HOME` (run as
+that user via `runuser`, not root — a module missing this step is why a
+tool can be on `$PATH` after a rebuild but still fail with "missing
+config"), registers `flakelet` facets into `services.flakelets`, and (via a
+forced Home Manager shared module) puts the scout profile's `bin/`,
+`share`, and man path ahead of the stale system copies for fish/bash/zsh.
 
 ## Day-to-day usage
 
@@ -192,6 +198,6 @@ ns-sandbox nix-scout switch my-tool
 - `nixos-module.nix` — the actual NixOS module logic behind
   `self.nixosModule`.
 
-Version 0.5.0. Bash implementation, no compiled binary. Depends on
+Version 0.6.0. Bash implementation, no compiled binary. Depends on
 `nixpkgs`, `nixpkgs-unstable`, `home-manager`, and `github:Mic92/flakelet`.
 MIT licensed.

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# NixOS activation: system.activationScripts.nix-scout-home-files applies the
+# `home` facet (home-files/ copied into $HOME) on every rebuild, not just on
+# an explicit `nix-scout switch <name>`. Defined in the standalone nix-scout
+# nixos-module.nix.
+#
+# Run from repo root:
+#   tests/activation-home-files.sh
+set -euo pipefail
+
+# shellcheck source=_lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_lib.sh"
+
+echo "== NixOS activation home-files =="
+
+BIN=""
+if BIN="$(resolve_nix_scout)"; then
+  pass "resolved nix-scout at $BIN (NIX_SCOUT_ROOT=$NIX_SCOUT_ROOT)"
+else
+  fail "nix-scout binary not resolved — NIX_SCOUT_ROOT unknown; activation tests limited"
+fi
+
+NS_MODULE="${NIX_SCOUT_ROOT:-}/nixos-module.nix"
+if [[ -f "$NS_MODULE" ]]; then
+  pass "nixos-module.nix found at $NS_MODULE"
+
+  if "$GREP" -qE 'activationScripts\.nix-scout-home-files' "$NS_MODULE"; then
+    pass "system.activationScripts.nix-scout-home-files defined"
+  else
+    fail "activation script not found in $NS_MODULE (want system.activationScripts.nix-scout-home-files)"
+  fi
+
+  if "$GREP" -qE 'apply-hm\.sh' "$NS_MODULE"; then
+    pass "home-files activation reuses apply-hm.sh (same script \`nix-scout switch\` uses)"
+  else
+    fail "home-files activation should reuse lib/apply-hm.sh, not reimplement the copy logic ($NS_MODULE)"
+  fi
+
+  if "$GREP" -qE 'runuser' "$NS_MODULE"; then
+    pass "home-files activation runs as the target user (runuser), not root"
+  else
+    fail "home-files activation must run apply-hm.sh as the owning user, e.g. via runuser ($NS_MODULE)"
+  fi
+
+  # Must fan out per normalUserNames, same as nix-scout-dirs/nix-scout-clear.
+  if "$GREP" -A15 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'normalUserNames'; then
+    pass "home-files activation fans out over normalUserNames"
+  else
+    fail "home-files activation must iterate normalUserNames like nix-scout-dirs/nix-scout-clear ($NS_MODULE)"
+  fi
+
+  # A single broken module/user must not fail the whole rebuild.
+  if "$GREP" -A15 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE '\|\|'; then
+    pass "home-files activation is non-fatal per module/user"
+  else
+    fail "home-files activation must not let one module's failure abort the rebuild ($NS_MODULE)"
+  fi
+
+  # Must run after user accounts exist.
+  if "$GREP" -A20 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'deps = \[ "users"'; then
+    pass "home-files activation depends on \"users\""
+  else
+    fail "home-files activation must depend on \"users\" so home directories exist first ($NS_MODULE)"
+  fi
+else
+  fail "nixos-module.nix not found at $NS_MODULE (cannot verify home-files activation)"
+fi
+
+finish_suite
