@@ -39,6 +39,72 @@ _priv_nix_env() {
   fi
 }
 
+# Per-run unified-diff logs under $XDG_STATE_HOME/nix-scout/diffs/.
+# Set NIX_SCOUT_DIFF_LOG=0 to skip file logging (stdout unchanged).
+# Override directory with NIX_SCOUT_DIFF_LOG_DIR.
+_SCOUT_DIFF_LOG=""
+_SCOUT_DIFF_PREFIX=""
+_SCOUT_DIFF_META=()
+
+_scout_diff_log_dir() {
+  printf '%s' "${NIX_SCOUT_DIFF_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/nix-scout/diffs}"
+}
+
+# Call once before the first _scout_emit_diff; pass a filesystem-safe prefix
+# (e.g. home-files-break-lock) and optional header lines (module:, store:, …).
+_scout_diff_run_prepare() {
+  _SCOUT_DIFF_PREFIX="${1:?diff log prefix required}"
+  shift
+  _SCOUT_DIFF_META=("$@")
+}
+
+_scout_diff_run_log_open() {
+  [[ -n "$_SCOUT_DIFF_LOG" || "${NIX_SCOUT_DIFF_LOG:-1}" == "0" ]] && return 0
+  local dir ts
+  dir="$(_scout_diff_log_dir)"
+  _priv_mkdir "$dir"
+  ts="$(date +%Y%m%dT%H%M%S)"
+  _SCOUT_DIFF_LOG="$dir/${_SCOUT_DIFF_PREFIX}-${ts}.log"
+  {
+    echo "=== nix-scout diff run: $_SCOUT_DIFF_PREFIX ==="
+    echo "started: $(date -Iseconds)"
+    echo "home: $HOME"
+    local line
+    for line in "${_SCOUT_DIFF_META[@]}"; do
+      echo "$line"
+    done
+  } | tee "$_SCOUT_DIFF_LOG"
+}
+
+# Print a unified diff to stdout and append the same bytes to the per-run log.
+_scout_emit_diff() {
+  local dest="$1" src="$2"
+  local label_old="${3:-previous}"
+  local label_new="${4:-Nix baseline}"
+
+  if [[ "${NIX_SCOUT_DIFF_LOG:-1}" != "0" && -z "$_SCOUT_DIFF_LOG" ]]; then
+    _scout_diff_run_log_open
+  fi
+
+  _emit() {
+    echo ""
+    echo "--- file: $dest ---"
+    diff -u --label "$label_old" --label "$label_new" "$dest" "$src" || true
+  }
+
+  if [[ -n "$_SCOUT_DIFF_LOG" ]]; then
+    _emit | tee -a "$_SCOUT_DIFF_LOG"
+  else
+    _emit
+  fi
+}
+
+_scout_diff_run_log_finish() {
+  if [[ -n "$_SCOUT_DIFF_LOG" ]]; then
+    echo "nix-scout: diff log $_SCOUT_DIFF_LOG"
+  fi
+}
+
 pin_gcroot() {
   local store="$1" name="$2"
   local gcroots="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${USER}/nix-scout}"

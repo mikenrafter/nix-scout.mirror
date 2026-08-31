@@ -11,6 +11,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scout-lib.sh"
 
 [[ -d "$STORE/home-files" ]] || exit 0
 
+_scout_diff_run_prepare "home-files-${NAME}" \
+  "module: $NAME" \
+  "store: $STORE"
+
 _home_dest() {
   local rel="$1"
   if [[ "$rel" == .config/* ]]; then
@@ -28,10 +32,9 @@ while IFS= read -r -d '' src; do
 
   if [[ -f "$dest" ]]; then
     if ! cmp -s "$src" "$dest" 2>/dev/null; then
-      diff -u \
-        --label "previous" \
-        --label "Nix baseline (scout module)" \
-        "$dest" "$src" || true
+      _scout_emit_diff "$dest" "$src" \
+        "previous" \
+        "Nix baseline (scout module)"
     fi
   fi
 
@@ -41,4 +44,5 @@ while IFS= read -r -d '' src; do
   cp --force "$src" "$dest"
   chmod u+w "$dest"
 done < <(find "$STORE/home-files" \( -type f -o -type l \) -print0)
+_scout_diff_run_log_finish
 echo "nix-scout: applied home-files scout $NAME from $STORE"

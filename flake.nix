@@ -18,6 +18,11 @@
     system = "x86_64-linux";
     pkgs = nixpkgs.legacyPackages.${system};
     scoutModuleLib = import ./lib/scout-module.nix;
+    scoutScriptPath = pkgs.lib.makeBinPath [
+      pkgs.coreutils
+      pkgs.diffutils
+      pkgs.findutils
+    ];
   in {
     lib = scoutModuleLib;
 
@@ -48,6 +53,7 @@
       version = "0.6.0";
       src = ./.;
       dontBuild = true;
+      nativeBuildInputs = [ pkgs.makeWrapper ];
       installPhase = ''
         runHook preInstall
         install -Dm755 $src/bin/nix-scout                $out/bin/nix-scout
@@ -60,6 +66,9 @@
         install -Dm755 $src/lib/apply-flakelet.sh      $out/lib/apply-flakelet.sh
         install -Dm755 $src/lib/flakelet-access.sh     $out/lib/flakelet-access.sh
         install -Dm755 $src/lib/hm-activate-files.sh   $out/lib/hm-activate-files.sh
+        for script in apply-hm.sh hm-activate-files.sh; do
+          wrapProgram $out/lib/$script --prefix PATH : ${scoutScriptPath}
+        done
         install -Dm644 $src/share/man/man1/nix-scout.1 \
           $out/share/man/man1/nix-scout.1
         mkdir -p $out/share/fish/vendor_completions.d

@@ -6,6 +6,14 @@ set -euo pipefail
 : "${HOME:?HOME is required}"
 : "${newGenPath:?newGenPath is required}"
 
+# shellcheck source=scout-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scout-lib.sh"
+
+_scout_diff_run_prepare "home-manager" \
+  "context: home-manager activation" \
+  "newGenPath: $newGenPath" \
+  "oldGenPath: ${oldGenPath:-}"
+
 copy_new_gen() {
   local files="$newGenPath/home-files"
   [[ -d "$files" ]] || return 0
@@ -32,7 +40,9 @@ copy_new_gen() {
 
     if [[ -e "$dest" || -L "$dest" ]]; then
       if ! cmp -s "$src" "$dest" 2>/dev/null; then
-        diff -u "$dest" "$src" || true
+        _scout_emit_diff "$dest" "$src" \
+          "previous" \
+          "home-manager generation"
       fi
     fi
 
@@ -78,3 +88,4 @@ cleanup_vanished() {
 
 copy_new_gen
 cleanup_vanished
+_scout_diff_run_log_finish
