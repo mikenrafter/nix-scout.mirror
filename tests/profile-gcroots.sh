@@ -207,10 +207,15 @@ run_capture env \
   NIX_SCOUT_GCROOTS="$NIX_SCOUT_GCROOTS" \
   "$BIN" status
 STATUS_AFTER="$CAPTURED_OUT$CAPTURED_ERR"
-if [[ "$STATUS_AFTER" != *scout-probe* && "$STATUS_AFTER" != *nix-scout* ]]; then
+# Scope to the "Scouts Active:" section only — the status header always
+# prints "Module Directory: .../nix-scout/tests/fixtures", which itself
+# contains the substring "nix-scout" and would false-positive a whole-output
+# match regardless of whether any payload is actually still live.
+SCOUTS_ACTIVE="$(printf '%s\n' "$STATUS_AFTER" | awk '/^Scouts Active:/{f=1;next} /^Flakelet Services:/{f=0} f')"
+if [[ "$SCOUTS_ACTIVE" != *scout-probe* && "$SCOUTS_ACTIVE" != *nix-scout* ]]; then
   pass "status empty of live payloads after clear"
 else
-  fail "status still lists payloads after clear: $(printf %q "$STATUS_AFTER")"
+  fail "status still lists payloads after clear: $(printf %q "$SCOUTS_ACTIVE")"
 fi
 
 assert_default_profile_untouched "clear did not modify default user profile"

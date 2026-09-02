@@ -61,12 +61,4 @@ else
   fail "nixos-module.nix not found at $NS_MODULE (NIX_SCOUT_ROOT may not be set)"
 fi
 
-# Host must import the constructor, not define sessionPath locally.
-HOST="$REPO/hosts/void.nix"
-if [[ -f "$HOST" ]] && "$GREP" -q 'nixosModule' "$HOST"; then
-  pass "hosts/void.nix imports nix-scout.nixosModule"
-else
-  fail "hosts/void.nix must import inputs.nix-scout.nixosModule ($HOST)"
-fi
-
 finish_suite

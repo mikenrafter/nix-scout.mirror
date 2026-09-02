@@ -49,8 +49,13 @@ if [[ -f "$NS_MODULE" ]]; then
     fail "activation clear must use nix-env --uninstall or rm -f to clear profile ($NS_MODULE)"
   fi
 
-  # Activation only clears — must not trigger a build.
-  if "$GREP" -qE 'nix build|nix-build' "$NS_MODULE"; then
+  # Activation only clears — must not trigger a build. Scoped to the
+  # nix-scout-clear block itself: nixos-module.nix legitimately contains
+  # `nix build` elsewhere (the switch-path activation script).
+  CLEAR_BLOCK="$(awk '/system\.activationScripts\.nix-scout-clear = \{/{f=1} f{print} f && /^  \};/{exit}' "$NS_MODULE")"
+  if [[ -z "$CLEAR_BLOCK" ]]; then
+    fail "could not isolate the nix-scout-clear activationScripts block ($NS_MODULE)"
+  elif printf '%s' "$CLEAR_BLOCK" | "$GREP" -qE 'nix build|nix-build'; then
     fail "activation clear must not run nix build (activation only clears; switch builds)"
   else
     pass "activation clear does not contain nix build / nix-build"
