@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Replace Home Manager linkGeneration (ln -Tsf) with DMS-style copies.
-# Invoked as an executable with HOME, newGenPath (required), oldGenPath (optional).
+# Invoked as an executable with HOME, newGenPath (required), oldGenPath (optional),
+# and NIX_SCOUT_HM_POLICIES_FILE (optional; per-file removal policies generated
+# at eval time from nix-scout.homeFilePolicies by the nix-scout NixOS module).
 set -euo pipefail
 
 : "${HOME:?HOME is required}"
@@ -74,15 +76,40 @@ cleanup_vanished() {
   [[ -n "$old" && -d "$old_files" ]] || return 0
   old_files="$(readlink -f "$old_files")"
 
-  local src rel dest
+  # Per-file removal policies for vanished home.file entries, generated at
+  # eval time by the nix-scout NixOS module from the user's
+  # `nix-scout.homeFilePolicies` attrset (JSON: relpath -> policy). Both the
+  # file and entries in it are optional; anything unlisted defaults to
+  # "remove". This script only ever runs from the NixOS module's Home Manager
+  # activation, so it is always activation mode — it may delete per policy.
+  # The baseline a vanished file is compared against is its copy in the old
+  # generation: exactly what the previous activation set it to.
+  declare -A policies=()
+  _scout_home_policies_load_json "${NIX_SCOUT_HM_POLICIES_FILE:-}" policies
+
+  local src rel dest policy modified
   while IFS= read -r -d '' src; do
     rel="${src#"$old_files"/}"
     dest="$HOME/$rel"
     if [[ -e "$new_files/$rel" || -L "$new_files/$rel" ]]; then
       continue
     fi
-    # Remove even when $HOME/$P is a regular copy, not a *-home-manager-files/* symlink.
-    rm -f "$dest"
+    if [[ ! -e "$dest" && ! -L "$dest" ]]; then
+      continue
+    fi
+    # Remove even when $HOME/$rel is a regular copy, not a
+    # *-home-manager-files/* symlink — but per policy, and a
+    # keep-if-modified file only when it is unmodified from its baseline.
+    policy="${policies[$rel]:-remove}"
+    if cmp -s "$dest" "$src" 2>/dev/null; then
+      modified="no"
+    else
+      modified="yes"
+    fi
+    _scout_home_vanished_report "home-manager" "$rel" "$policy" "$modified" "activation"
+    if [[ "$_SCOUT_HOME_VANISHED_ACTION" == "delete" ]]; then
+      rm -f "$dest"
+    fi
   done < <(find -L "$old_files" -type f -print0)
 }
 

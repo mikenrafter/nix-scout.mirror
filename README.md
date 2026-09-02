@@ -25,7 +25,9 @@ into `$HOME`, or (de)register a systemd service — without running a full
     subdirectory copied verbatim into `$HOME`. Applied both by
     `nix-scout switch <name>` and, automatically for every normal user, by
     a real `nixos-rebuild` — no separate switch needed to get a module's
-    config onto disk once its `home-files/` is built.
+    config onto disk once its `home-files/` is built. Files that later
+    vanish from the config are handled per the removal policies described
+    in [Home-file removal policies](#home-file-removal-policies).
   - `flakelet` — `flakelets.<attr>`, a [flakelet](https://github.com/Mic92/flakelet)
     systemd unit, applied on `nixos-rebuild` and refreshed on switch.
   - `baseline` — a real NixOS module (function or attrset), imported directly
@@ -147,6 +149,63 @@ is imported directly into the host's module list on `nixos-rebuild` and can
 set anything an ordinary NixOS module could. It is never touched by
 `nix-scout switch` — only a rebuild picks it up.
 
+### Home-file removal policies
+
+Files nix-scout copies into `$HOME` are mutable regular copies (so you can
+edit them), which means a file can outlive its config entry — dropped from a
+module's `home-files/` tree, or from your Home Manager config — and you may
+have edited it since it was applied. Both home-files activators therefore
+track what they applied and handle vanished files per a per-file policy:
+
+| policy | rebuild activation | `nix-scout switch` (CLI) |
+|---|---|---|
+| `remove` (default) | deleted | reported: "a rebuild would delete it" |
+| `keep` | left in place, silently | reported |
+| `keep-if-modified` | deleted only if it still matches the baseline nix-scout last wrote; kept (and reported) if you edited it | reported |
+| `inform` | left in place + "no longer managed" notice | same notice |
+
+Two hard rules:
+
+- **The nix-scout CLI never deletes.** Only the NixOS module's activation
+  scripts do. A `switch` run reports every vanished file with exactly what
+  the next rebuild would do under its policy — including the deletions it is
+  skipping.
+- **Baselines are per file, recorded when nix-scout writes it.** A
+  `keep-if-modified` file only survives deletion while it differs from the
+  baseline the activator last set; revert your edits and the next rebuild
+  cleans it up. Files applied before this existed have no baseline on record
+  and are treated as modified (kept).
+
+Scout modules declare non-default policies with a `home-manage.json` sibling
+of `home-files/` in the package output — a JSON object mapping
+`home-files/`-relative paths to a policy:
+
+```nix
+packages.${system}.scout = pkgs.runCommand "scout-${NAME}-home" { } ''
+  mkdir -p $out/home-files/.config/${NAME}
+  echo '{}' > $out/home-files/.config/${NAME}/config.json
+  cp ${pkgs.writeText "${NAME}-home-manage.json" (builtins.toJSON {
+       ".config/${NAME}/config.json" = "keep-if-modified";
+     })} $out/home-manage.json
+'';
+```
+
+For Home Manager files (`home.file` entries copied by nix-scout's forced
+activator), set the per-user option the module defines:
+
+```nix
+nix-scout.homeFilePolicies = {
+  ".config/DankMaterialShell/settings.json" = "keep-if-modified";
+  ".config/old-tool/legacy.conf" = "inform";
+};
+```
+
+Tracking records live in `~/.local/state/nix-scout/`: the per-module
+manifests under `home-files/` (scout modules) and the per-run diff logs under
+`diffs/`. One known constraint: the rebuild activation pins the state dir to
+`$HOME/.local/state` (activation runs as the user via `runuser` and cannot
+see a custom `XDG_STATE_HOME` from your interactive environment).
+
 ## Troubleshooting
 
 `nix-scout doctor` checks (and where possible repairs) the usual failure
@@ -168,8 +227,8 @@ nix flake check
 
 covers `module-mode`, `path-session`, `activation-clear`, `flakelet`,
 `new-module`, `baseline`, and `completions`. Suites that need the built binary
-(`cli`, `hm-activate-files`, `materialize`, `profile-gcroots`) are run
-manually:
+(`cli`, `hm-activate-files`, `home-files-cleanup`, `materialize`,
+`profile-gcroots`) are run manually:
 
 ```
 nix develop
@@ -198,6 +257,6 @@ ns-sandbox nix-scout switch my-tool
 - `nixos-module.nix` — the actual NixOS module logic behind
   `self.nixosModule`.
 
-Version 0.6.0. Bash implementation, no compiled binary. Depends on
+Version 0.7.0. Bash implementation, no compiled binary. Depends on
 `nixpkgs`, `nixpkgs-unstable`, `home-manager`, and `github:Mic92/flakelet`.
 MIT licensed.

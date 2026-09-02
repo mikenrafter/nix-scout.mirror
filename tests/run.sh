@@ -26,6 +26,7 @@ suites=(
   new-module.sh
   completions.sh
   hm-activate-files.sh
+  home-files-cleanup.sh
   materialize.sh
   profile-gcroots.sh
   update-module.sh

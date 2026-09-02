@@ -105,6 +105,211 @@ _scout_diff_run_log_finish() {
   fi
 }
 
+# ── home-files removal policies ──────────────────────────────────────────────
+# Files nix-scout copies into $HOME are mutable regular copies, so a user can
+# edit them after activation and a file can outlive its config entry (dropped
+# from home-files/, or the home-files/ tree removed entirely). Both home-files
+# activators (apply-hm.sh for scout modules, hm-activate-files.sh for Home
+# Manager generations) share this vocabulary for files that are no longer in
+# their config:
+#
+#   remove (default)  delete the file
+#   keep              never delete it
+#   keep-if-modified  delete it only if it still matches the baseline the
+#                     activator last wrote; keep it if the user has edited it
+#   inform            never delete; report that it is no longer managed
+#
+# Deletions only ever happen in activation mode (NIX_SCOUT_ACTIVATION=1, set
+# by the NixOS module's activation scripts). A `nix-scout switch` run is CLI
+# mode: it never deletes anything and reports, for every vanished file, what
+# a rebuild would do under that file's policy.
+
+# Print a line to stdout and, when a per-run diff log is open, append it there
+# too so removal decisions land in the same audit log as the diffs.
+_scout_say() {
+  if [[ -n "$_SCOUT_DIFF_LOG" ]]; then
+    printf '%s\n' "$1" | tee -a "$_SCOUT_DIFF_LOG"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# Validate a removal policy. Echoes one of remove|keep|keep-if-modified|inform;
+# an empty value (a missing entry) means the default. Unknown values warn and
+# fall back to remove so a typo can never silently pin a file forever.
+_scout_home_policy_normalize() {
+  local policy="${1:-}"
+  case "$policy" in
+    ""|remove|keep|keep-if-modified|inform)
+      printf '%s' "${policy:-remove}"
+      ;;
+    *)
+      echo "nix-scout: unknown home-file policy '$policy' — treating as 'remove'" >&2
+      printf '%s' "remove"
+      ;;
+  esac
+}
+
+# Report a vanished home file (on record from a previous run, absent from the
+# current config) and decide its fate.
+#   $1 module label   $2 rel path   $3 policy
+#   $4 modified: yes|no|unknown — does the file differ from the baseline that
+#      was set for it?  $5 mode: activation|cli
+# Sets _SCOUT_HOME_VANISHED_ACTION to "delete" or "keep".
+_scout_home_vanished_report() {
+  local module="$1" rel="$2" policy="$3" modified="$4" mode="$5"
+  local will_delete=0 reason=""
+
+  case "$policy" in
+    remove)
+      will_delete=1
+      ;;
+    keep-if-modified)
+      case "$modified" in
+        no)  will_delete=1; reason="; unmodified from its baseline" ;;
+        yes) reason="; differs from its baseline" ;;
+        # No baseline on record (applied before tracking existed, or the
+        # file cannot be hashed) — no proof it is unmodified, so it stays.
+        *)   reason="; no baseline on record" ;;
+      esac
+      ;;
+    inform)
+      _SCOUT_HOME_VANISHED_ACTION="keep"
+      _scout_say "nix-scout: $module: $rel is no longer managed by nix-scout (policy: inform); left in place"
+      return 0
+      ;;
+    # keep: falls through with will_delete=0, reason="" — never deletes.
+  esac
+
+  if [[ "$mode" == "activation" ]]; then
+    if [[ "$will_delete" == "1" ]]; then
+      _SCOUT_HOME_VANISHED_ACTION="delete"
+      _scout_say "nix-scout: $module: removed $rel (no longer in the config$reason)"
+    else
+      _SCOUT_HOME_VANISHED_ACTION="keep"
+      # A plain "keep" policy was never going to delete — nothing to report.
+      [[ "$policy" == "keep" ]] || _scout_say "nix-scout: $module: kept $rel (no longer in the config$reason)"
+    fi
+  else
+    _SCOUT_HOME_VANISHED_ACTION="keep"
+    if [[ "$policy" == "keep" ]]; then
+      _scout_say "nix-scout: $module: $rel is no longer in the config — a rebuild would leave it in place (policy: keep)"
+    elif [[ "$will_delete" == "1" ]]; then
+      _scout_say "nix-scout: $module: $rel is no longer in the config — a rebuild would delete it (policy: $policy$reason); skipped: the nix-scout CLI never deletes"
+    else
+      _scout_say "nix-scout: $module: $rel is no longer in the config — a rebuild would leave it in place (policy: $policy$reason)"
+    fi
+  fi
+}
+
+# ── per-module home-files manifest (scout modules only) ─────────────────────
+# hm-activate-files.sh tracks the previous generation via oldGenPath; scout
+# home-files have no generations, so apply-hm.sh records what it last applied
+# to $HOME: one line per file, TAB-separated: relpath, policy, baseline
+# sha256. Lives with the diff logs under the user's state dir so both the CLI
+# and the rebuild activation script (run as the user) see the same record.
+declare -gA _SCOUT_MANIFEST_POLICY=()
+declare -gA _SCOUT_MANIFEST_SHA=()
+
+_scout_manifest_dir() {
+  printf '%s' "${NIX_SCOUT_MANIFEST_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/nix-scout/home-files}"
+}
+
+# Manifest relpaths come from our own state file and from module-authored
+# home-manage.json — defensive regardless: no absolute paths, no traversal,
+# no characters that would break the TAB/line-based formats.
+_scout_manifest_rel_ok() {
+  local rel="$1" part
+  [[ -n "$rel" && "$rel" != /* && "$rel" != *$'\t'* && "$rel" != *$'\n'* ]] || return 1
+  while IFS=/ read -r -a parts; do
+    for part in "${parts[@]}"; do
+      [[ "$part" == "." || "$part" == ".." || -z "$part" ]] && return 1
+    done
+  done <<< "$rel"
+  return 0
+}
+
+_scout_manifest_load() {
+  local module="$1" file rel policy sha
+  _SCOUT_MANIFEST_POLICY=()
+  _SCOUT_MANIFEST_SHA=()
+  file="$(_scout_manifest_dir)/$module.manifest"
+  [[ -f "$file" ]] || return 0
+  while IFS=$'\t' read -r rel policy sha; do
+    [[ "$rel" == "#"* || -z "$rel" ]] && continue
+    if ! _scout_manifest_rel_ok "$rel"; then
+      echo "nix-scout: ignoring unsafe path in $file: $rel" >&2
+      continue
+    fi
+    _SCOUT_MANIFEST_POLICY["$rel"]="$(_scout_home_policy_normalize "$policy")"
+    _SCOUT_MANIFEST_SHA["$rel"]="${sha:-}"
+  done < "$file"
+}
+
+# Atomically rewrite the manifest from the current arrays; call after the
+# copy/sweep pass so the file always reflects exactly what this run left on
+# disk.
+_scout_manifest_store() {
+  local module="$1" dir file tmp rel
+  dir="$(_scout_manifest_dir)"
+  file="$dir/$module.manifest"
+  _priv_mkdir "$dir"
+  tmp="$(mktemp "$dir/.${module}.manifest.XXXXXX")"
+  {
+    echo "# nix-scout home-files manifest v1: relpath, policy, baseline sha256 (module: $module)"
+    for rel in "${!_SCOUT_MANIFEST_POLICY[@]}"; do
+      printf '%s\t%s\t%s\n' "$rel" "${_SCOUT_MANIFEST_POLICY[$rel]}" "${_SCOUT_MANIFEST_SHA[$rel]}"
+    done
+  } | LC_ALL=C sort > "$tmp"
+  mv -f "$tmp" "$file"
+}
+
+# ── shared JSON policy-file parsing ──────────────────────────────────────────
+# Both home-files activators take an optional JSON object mapping a
+# home-relative path to a removal policy: apply-hm.sh from a module's
+# home-manage.json, hm-activate-files.sh from the eval-time
+# NIX_SCOUT_HM_POLICIES_FILE. One parser, one path-safety check, one jq
+# filter, so the two never drift apart.
+#   $1 JSON file (missing/non-object: warns and leaves the array untouched)
+#   $2 name of a caller-declared associative array to fill (relpath -> policy)
+_scout_home_policies_load_json() {
+  local json="$1" array_name="$2"
+  local -n _scout_policies_dest="$array_name"
+  local policy rel
+  [[ -f "$json" ]] || return 0
+  if ! jq -e 'type == "object"' "$json" >/dev/null 2>&1; then
+    echo "nix-scout: $json is not a JSON object — ignoring per-file policies" >&2
+    return 0
+  fi
+  while IFS=$'\t' read -r policy rel; do
+    [[ -z "$rel" ]] && continue
+    if ! _scout_manifest_rel_ok "$rel"; then
+      echo "nix-scout: ignoring unsafe path in $json: $rel" >&2
+      continue
+    fi
+    _scout_policies_dest["$rel"]="$(_scout_home_policy_normalize "$policy")"
+  done < <(jq -r '
+    to_entries[]
+    | select((.value | type) == "string")
+    | select((.key | test("[\\x00-\\x1f]")) | not)
+    | "\(.value)\t\(.key)"
+  ' "$json")
+}
+
+# ── per-file policies shipped by a scout module ─────────────────────────────
+# A module's package may carry a home-manage.json next to home-files/: a JSON
+# object mapping home-files-relative paths to a policy, authored in the
+# module's flake.nix via pkgs.writeText + builtins.toJSON. Fills
+# _SCOUT_FILE_POLICY; unlisted (and modules without the file) default to
+# remove.
+declare -gA _SCOUT_FILE_POLICY=()
+
+_scout_home_manage_parse() {
+  local store="$1"
+  _SCOUT_FILE_POLICY=()
+  _scout_home_policies_load_json "$store/home-manage.json" _SCOUT_FILE_POLICY
+}
+
 pin_gcroot() {
   local store="$1" name="$2"
   local gcroots="${NIX_SCOUT_GCROOTS:-/nix/var/nix/gcroots/per-user/${USER}/nix-scout}"

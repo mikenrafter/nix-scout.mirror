@@ -114,6 +114,13 @@ Facets: a scout module may export any combination of:
   The flakelet entry must exist in /etc/flakelet.json (populated by nixos-rebuild).
   If the entry is missing: rebuild once to register, then retry nix-scout switch.
 
+Home-files removal: files nix-scout applied that later vanish from the config
+are handled per policy — remove (default) | keep | keep-if-modified | inform,
+declared per file in the module's home-manage.json (or, for Home Manager
+files, nix-scout.homeFilePolicies). Only the NixOS rebuild activation deletes;
+'switch' never deletes — it reports, for every vanished file, what a rebuild
+would do. Records: ~/.local/state/nix-scout/home-files/<name>.manifest
+
 Environment (paths file: $NIX_SCOUT_PATHS_FILE — written by the nix-scout NixOS module):
   NIX_SCOUT_MODULES   (see paths file)
   NIX_SCOUT_PARENT    (see paths file)

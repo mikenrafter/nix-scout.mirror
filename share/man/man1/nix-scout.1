@@ -1,4 +1,4 @@
-.TH NIX\-SCOUT 1 "August 2026" "nix\-scout 0.5.0" "User Commands"
+.TH NIX\-SCOUT 1 "September 2026" "nix\-scout 0.7.0" "User Commands"
 .SH NAME
 nix\-scout \- scout module switcher for NixOS
 .SH SYNOPSIS
@@ -117,6 +117,14 @@ never builds or applies the
 .B baseline
 facet, if present \(em it only ever takes effect via
 .BR nixos\-rebuild (8).
+.PP
+.B switch
+never deletes anything from
+.IR $HOME .
+Files it applied that have since vanished from the config are reported with
+what a rebuild would do under their removal policy (see
+.SX HOME\-FILE REMOVAL POLICIES );
+only the rebuild activation actually deletes.
 .TP
 .BI switch " path"
 Install a store path
@@ -341,6 +349,58 @@ Discovery is wired by the shell snippets written on switch (see
 .TP
 .BR help | \-\-help | \-h
 Print usage information.
+.SH HOME\-FILE REMOVAL POLICIES
+Files nix\-scout copies into
+.I $HOME
+are mutable regular copies, so a file can outlive its config entry (dropped
+from a module's
+.IR home-files/ ,
+or from the Home Manager config) and a user may have edited it since it was
+applied. Both home\-files activators track what they applied and handle files
+that vanish from their config per a per\-file policy:
+.TP
+.B remove
+(default) delete the file.
+.TP
+.B keep
+never delete it.
+.TP
+.B keep\-if\-modified
+delete it only if it still matches the
+.I baseline
+\(em the content the activator last wrote; keep it (with a report) when it
+differs, i.e. the user edited it. A file with no baseline on record is
+treated as modified and kept.
+.TP
+.B inform
+never delete it; report that it is no longer managed.
+.PP
+Deletions only ever happen in activation mode (NIX_SCOUT_ACTIVATION=1, set by
+the NixOS module's activation scripts). A
+.B nix\-scout switch
+run is CLI mode: it never deletes and reports, for every vanished file, what
+a rebuild would do under that file's policy.
+.PP
+For scout\-module home files, policies are declared by a
+.I home\-manage.json
+sibling of
+.I home\-files/
+in the package output (a JSON object mapping home\-files\-relative paths to a
+policy). For Home Manager files, the nix\-scout NixOS module defines the
+per\-user option
+.B nix\-scout.homeFilePolicies
+(an attrset mapping
+.I $HOME
+\-relative paths to a policy). Unlisted files default to
+.BR remove .
+.PP
+Scout\-module tracking records live in the per\-module manifests under
+.I ~/.local/state/nix\-scout/home-files/
+(see
+.SX FILES );
+Home Manager tracking needs no record \(em the baseline of a vanished file is
+its copy in the previous generation
+.RI ( oldGenPath ).
 .SH ENVIRONMENT
 .TP
 .B NIX_SCOUT_MODULES
@@ -387,6 +447,28 @@ Defaults to
 Full path to the per\-user gc\-roots directory.
 Defaults to
 .IR /nix/var/nix/gcroots/per\-user/$USER/nix\-scout .
+.TP
+.B NIX_SCOUT_ACTIVATION
+Set to
+.B 1
+by the nix\-scout NixOS module's activation scripts. Opts the home\-files
+activator into deletion mode: files that vanished from the config are
+actually removed per their policy. Without it (the
+.B nix\-scout switch
+case) nothing is ever deleted; vanished files are only reported. Do not set
+this by hand.
+.TP
+.B NIX_SCOUT_HM_POLICIES_FILE
+Store path of the JSON per\-file removal policies the nix\-scout NixOS module
+generates from
+.B nix\-scout.homeFilePolicies
+and hands to the Home Manager activator. Set by the module; not meant to be
+set by hand.
+.TP
+.B NIX_SCOUT_MANIFEST_DIR
+Override for the per\-module home\-files manifest directory. Defaults to
+.IR ~/.local/state/nix\-scout/home-files .
+Mostly useful for tests.
 .SH SUDO MODE
 .B sudo nix\-scout
 is supported.
@@ -419,7 +501,11 @@ subdirectory (installed into the scout profile via
 and/or a
 .I home\-files/
 subdirectory (each file copied verbatim into
-.IR $HOME ).
+.IR $HOME ;
+per\-file removal policies via an optional
+.I home\-manage.json
+sibling \(em see
+.SX HOME\-FILE REMOVAL POLICIES ).
 Both sub\-facets are applied when both are present.
 .IP \(bu 2
 .B flakelets.<attr>
@@ -530,6 +616,17 @@ This turns a silent, hard\-to\-diagnose failure in flakelet's own evaluation
 (which has no write access to fix a missing node, and no way to fake a real
 one) into an immediate, actionable rebuild error.
 .SH FILES
+.TP
+.I ~/.local/state/nix\-scout/home-files/<module>.manifest
+Per\-module record of the home files nix\-scout last applied to
+.IR $HOME :
+one line per file, TAB\-separated (path, removal policy, baseline sha256).
+Drives removal tracking for scout\-module home files; rewritten atomically
+after every apply. For Home Manager files the previous generation serves the
+same role, so there is no manifest.
+.TP
+.I ~/.local/state/nix\-scout/diffs/
+Per\-run unified\-diff logs of every content change and removal decision.
 .TP
 .I /etc/flakelet/config.json
 Flakelet daemon configuration.

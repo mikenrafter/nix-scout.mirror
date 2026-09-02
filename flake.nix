@@ -22,6 +22,7 @@
       pkgs.coreutils
       pkgs.diffutils
       pkgs.findutils
+      pkgs.jq
     ];
   in {
     lib = scoutModuleLib;
@@ -50,7 +51,7 @@
 
     packages.${system}.nix-scout = pkgs.stdenv.mkDerivation {
       pname = "nix-scout";
-      version = "0.6.0";
+      version = "0.7.0";
       src = ./.;
       dontBuild = true;
       nativeBuildInputs = [ pkgs.makeWrapper ];

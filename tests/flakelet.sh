@@ -46,7 +46,17 @@ echo "-- apply-hm.sh / apply-env.sh: self-detect (exit 0 when facet absent) --"
 for script in apply-hm.sh apply-env.sh; do
   cand="$REPO/lib/$script"
   if [[ -f "$cand" ]]; then
-    if "$GREP" -q 'exit 0' "$cand"; then
+    # apply-hm.sh self-detects via its facet guard: it must NOT early-exit on
+    # an absent home-files/ tree, because the vanished-file sweep still has to
+    # run for modules that dropped the facet. apply-env.sh self-detects via a
+    # plain early `exit 0`.
+    if [[ "$script" == "apply-hm.sh" ]]; then
+      if "$GREP" -qF 'if [[ -d "$STORE/home-files" ]]' "$cand"; then
+        pass "lib/$script self-detects an absent store facet (copy loop guarded, sweep still runs)"
+      else
+        fail "lib/$script must guard its copy loop on the home-files/ facet (self-detection) ($cand)"
+      fi
+    elif "$GREP" -q 'exit 0' "$cand"; then
       pass "lib/$script has exit 0 self-detection path"
     else
       fail "lib/$script must exit 0 (no-op) when its store facet is absent"

@@ -212,36 +212,70 @@ in
   };
 
   home-manager.sharedModules = lib.mkForce [
-    ({ config, lib, ... }: {
-      home.sessionPath = [ (scoutBin config.home.username) ];
-      home.sessionVariables = {
-        # "$VAR" is fine in "..." — Nix only interpolates ${...}. Use \${VAR} for braces.
-        XDG_DATA_DIRS = "${scoutShare config.home.username}:$XDG_DATA_DIRS";
-        MANPATH = "${scoutMan config.home.username}:$MANPATH";
-      };
-      programs.fish.interactiveShellInit = lib.mkAfter ''
-        fish_add_path -m ${scoutBin config.home.username}
-      '';
-      programs.bash.initExtra = lib.mkAfter ''
-        [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash" ]] && \
-          source "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash"
-      '';
-      programs.zsh.initExtra = lib.mkAfter ''
-        [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh" ]] && \
-          source "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh"
-      '';
+    ({ config, lib, ... }:
+      let
+        # Per-file removal policies for files hm-activate-files.sh copied into
+        # $HOME, serialized once at eval time and handed to the activation
+        # script as a store path (no shell-quoting pitfalls). See
+        # lib/scout-lib.sh for the policy semantics.
+        hmHomeFilePoliciesFile = pkgs.writeText "nix-scout-hm-home-file-policies"
+          (builtins.toJSON config.nix-scout.homeFilePolicies);
+      in {
+        # Removal policy per home file, keyed by the file's path relative to
+        # $HOME (e.g. ".config/app/settings.conf"), applied by
+        # hm-activate-files.sh when the file disappears from the new
+        # generation:
+        #   remove (default)  delete it
+        #   keep              never delete it
+        #   keep-if-modified  delete only if it still matches the copy the
+        #                     previous activation wrote; keep it if edited
+        #   inform            never delete; report it is no longer managed
+        options.nix-scout.homeFilePolicies = lib.mkOption {
+          type = lib.types.attrsOf (lib.types.enum [
+            "remove" "keep" "keep-if-modified" "inform"
+          ]);
+          default = { };
+          description = ''
+            Removal policy per home file copied into $HOME by nix-scout's
+            Home Manager activator, applied when the file vanishes from the
+            generation. Only the rebuild activation deletes; nix-scout switch
+            never does.
+          '';
+        };
 
-      home.activation.checkLinkTargets = lib.mkForce (
-        lib.hm.dag.entryBefore [ "writeBoundary" ] ''
-          :
-        ''
-      );
+        home.sessionPath = [ (scoutBin config.home.username) ];
+        home.sessionVariables = {
+          # "$VAR" is fine in "..." — Nix only interpolates ${...}. Use \${VAR} for braces.
+          XDG_DATA_DIRS = "${scoutShare config.home.username}:$XDG_DATA_DIRS";
+          MANPATH = "${scoutMan config.home.username}:$MANPATH";
+        };
+        programs.fish.interactiveShellInit = lib.mkAfter ''
+          fish_add_path -m ${scoutBin config.home.username}
+        '';
+        programs.bash.initExtra = lib.mkAfter ''
+          [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash" ]] && \
+            source "''${XDG_CONFIG_HOME:-''$HOME/.config}/bash/nix-scout.bash"
+        '';
+        programs.zsh.initExtra = lib.mkAfter ''
+          [[ -f "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh" ]] && \
+            source "''${XDG_CONFIG_HOME:-''$HOME/.config}/zsh/nix-scout.zsh"
+        '';
 
-      home.activation.linkGeneration = lib.mkForce (
-        lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-          ${pkgs.coreutils}/bin/env "newGenPath=$newGenPath" "oldGenPath=''${oldGenPath:-}" ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/hm-activate-files.sh
-        ''
-      );
+        home.activation.checkLinkTargets = lib.mkForce (
+          lib.hm.dag.entryBefore [ "writeBoundary" ] ''
+            :
+          ''
+        );
+
+        home.activation.linkGeneration = lib.mkForce (
+          lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+            ${pkgs.coreutils}/bin/env \
+              "newGenPath=$newGenPath" \
+              "oldGenPath=''${oldGenPath:-}" \
+              "NIX_SCOUT_HM_POLICIES_FILE=${hmHomeFilePoliciesFile}" \
+              ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/hm-activate-files.sh
+          ''
+        );
     })
   ];
 
@@ -260,21 +294,26 @@ in
   # `nix-scout switch <name>` — a full `nixos-rebuild switch` prebuilt the
   # package (above) but never copied its home-files/ tree into $HOME, so a
   # module's binary could be on PATH while its config was silently missing.
-  # Run apply-hm.sh (the same script `switch` uses) for every module that
-  # carries a home-files/ subdirectory, for every normal user, on each
-  # rebuild — via runuser so files land owned by that user, not root.
-  # Non-fatal per module/user so one broken module can't fail the rebuild.
+  # Run apply-hm.sh (the same script `switch` uses) for every scout module,
+  # for every normal user, on each rebuild — via runuser so files land owned
+  # by that user, not root. Modules without home-files/ cheaply no-op except
+  # for the vanished-file sweep, so a module that drops the facet still gets
+  # its previously applied files cleaned per policy. NIX_SCOUT_ACTIVATION=1
+  # is what permits deletion — a plain `nix-scout switch` run never deletes;
+  # XDG_STATE_HOME is pinned to the user's home because runuser inherits
+  # root's environment and the manifest/diff state must land in *their* state
+  # dir. Non-fatal per module/user so one broken module can't fail the rebuild.
   system.activationScripts.nix-scout-home-files = {
     text = lib.concatMapStrings (user:
       let home = config.users.users.${user}.home; in
       lib.concatMapStrings (m: ''
-        if [[ -d ${lib.escapeShellArg "${m.store}/home-files"} ]]; then
-          ${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg user} -- \
-            ${pkgs.coreutils}/bin/env HOME=${lib.escapeShellArg home} \
+        ${pkgs.util-linux}/bin/runuser -u ${lib.escapeShellArg user} -- \
+          ${pkgs.coreutils}/bin/env HOME=${lib.escapeShellArg home} \
+            NIX_SCOUT_ACTIVATION=1 \
+            XDG_STATE_HOME=${lib.escapeShellArg "${home}/.local/state"} \
             ${lib.getExe pkgs.bash} ${nixScoutPkg}/lib/apply-hm.sh \
               ${lib.escapeShellArg m.store} ${lib.escapeShellArg m.name} \
-          || echo "nix-scout: home-files apply failed for ${m.name} (user ${user})" >&2
-        fi
+        || echo "nix-scout: home-files apply failed for ${m.name} (user ${user})" >&2
       '') homeFilesModules
     ) normalUserNames;
     deps = [ "users" ];

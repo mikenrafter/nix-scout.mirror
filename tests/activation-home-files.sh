@@ -36,6 +36,35 @@ if [[ -f "$NS_MODULE" ]]; then
     fail "home-files activation should reuse lib/apply-hm.sh, not reimplement the copy logic ($NS_MODULE)"
   fi
 
+  # Removal tracking: the activation script is the only caller allowed to
+  # delete vanished home files (NIX_SCOUT_ACTIVATION=1); a plain
+  # `nix-scout switch` run of the same script must never delete.
+  if "$GREP" -qE 'NIX_SCOUT_ACTIVATION=1' "$NS_MODULE"; then
+    pass "home-files activation opts into deletion mode (NIX_SCOUT_ACTIVATION=1)"
+  else
+    fail "home-files activation must set NIX_SCOUT_ACTIVATION=1 so apply-hm.sh may delete vanished files; CLI runs stay report-only ($NS_MODULE)"
+  fi
+
+  # runuser inherits root's environment — the per-user manifest/diff state
+  # must be pinned to the owning user's state dir.
+  if "$GREP" -qE 'XDG_STATE_HOME=' "$NS_MODULE"; then
+    pass "home-files activation pins XDG_STATE_HOME to the owning user"
+  else
+    fail "home-files activation must pin XDG_STATE_HOME to the user's state dir (runuser would otherwise inherit root's) ($NS_MODULE)"
+  fi
+
+  # Per-file removal policies reach the HM activator as an eval-time JSON file.
+  if "$GREP" -qE 'NIX_SCOUT_HM_POLICIES_FILE' "$NS_MODULE"; then
+    pass "HM activation receives NIX_SCOUT_HM_POLICIES_FILE"
+  else
+    fail "nixos-module must pass NIX_SCOUT_HM_POLICIES_FILE (from nix-scout.homeFilePolicies) to hm-activate-files.sh ($NS_MODULE)"
+  fi
+  if "$GREP" -qE 'homeFilePolicies' "$NS_MODULE"; then
+    pass "per-user option nix-scout.homeFilePolicies defined"
+  else
+    fail "HM shared module must define nix-scout.homeFilePolicies (remove|keep|keep-if-modified|inform per home file) ($NS_MODULE)"
+  fi
+
   if "$GREP" -qE 'runuser' "$NS_MODULE"; then
     pass "home-files activation runs as the target user (runuser), not root"
   else
@@ -43,21 +72,21 @@ if [[ -f "$NS_MODULE" ]]; then
   fi
 
   # Must fan out per normalUserNames, same as nix-scout-dirs/nix-scout-clear.
-  if "$GREP" -A15 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'normalUserNames'; then
+  if "$GREP" -A25 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'normalUserNames'; then
     pass "home-files activation fans out over normalUserNames"
   else
     fail "home-files activation must iterate normalUserNames like nix-scout-dirs/nix-scout-clear ($NS_MODULE)"
   fi
 
   # A single broken module/user must not fail the whole rebuild.
-  if "$GREP" -A15 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE '\|\|'; then
+  if "$GREP" -A25 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE '\|\|'; then
     pass "home-files activation is non-fatal per module/user"
   else
     fail "home-files activation must not let one module's failure abort the rebuild ($NS_MODULE)"
   fi
 
   # Must run after user accounts exist.
-  if "$GREP" -A20 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'deps = \[ "users"'; then
+  if "$GREP" -A30 'activationScripts.nix-scout-home-files' "$NS_MODULE" | "$GREP" -qE 'deps = \[ "users"'; then
     pass "home-files activation depends on \"users\""
   else
     fail "home-files activation must depend on \"users\" so home directories exist first ($NS_MODULE)"

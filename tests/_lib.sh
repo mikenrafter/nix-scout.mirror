@@ -280,6 +280,24 @@ assert_symlink_to() {
   pass "$label (symlink to store)"
 }
 
+assert_file_present() {
+  local path="$1" label="$2"
+  if [[ -e "$path" || -L "$path" ]]; then
+    pass "$label"
+  else
+    fail "$label (missing: $path)"
+  fi
+}
+
+assert_file_absent() {
+  local path="$1" label="$2"
+  if [[ -e "$path" || -L "$path" ]]; then
+    fail "$label (still present: $path)"
+  else
+    pass "$label"
+  fi
+}
+
 finish_suite() {
   echo
   if [[ "$failures" -eq 0 ]]; then

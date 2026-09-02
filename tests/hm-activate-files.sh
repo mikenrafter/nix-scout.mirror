@@ -225,4 +225,91 @@ assert_symlink_to "$WANTS_DROPIN" "$UNIT_STORE_TARGET" ".wants dropin is a symli
 assert_regular_writable_file "$HOME/.config/DankMaterialShell/settings.json" \
   "settings.json still copied (unaffected by systemd/user carve-out)"
 
+echo "-- per-file removal policies for vanished home.file entries --"
+# NIX_SCOUT_HM_POLICIES_FILE (JSON, generated at eval time by the nix-scout
+# NixOS module from nix-scout.homeFilePolicies) decides what happens to a file
+# that vanishes from the generation. The baseline a keep-if-modified file is
+# compared against is its copy in the old generation. Default (unlisted) is
+# remove — covered above by the vanished keep note.
+
+GEN_E_STORE="$WORKDIR/gen-e-store"
+GEN_E="$WORKDIR/new-gen-e"
+GEN_F_STORE="$WORKDIR/gen-f-store"
+GEN_F="$WORKDIR/new-gen-f"
+
+"$MKDIR" -p \
+  "$GEN_E_STORE/.config/policyapp" \
+  "$GEN_F_STORE/.config/policyapp" \
+  "$GEN_E" "$GEN_F"
+for f in default.conf keepme.conf edited.conf pristine.conf inform.conf; do
+  printf 'original %s\n' "$f" >"$GEN_E_STORE/.config/policyapp/$f"
+done
+ln -s "$GEN_E_STORE" "$GEN_E/home-files"
+ln -s "$GEN_F_STORE" "$GEN_F/home-files"
+
+run_activator "$GEN_E" ""
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "activator exit 0 copying policy-test generation"
+else
+  fail "activator failed on policy-test generation (rc=$CAPTURED_RC err=$(printf %q "$CAPTURED_ERR"))"
+fi
+
+# User edits one keep-if-modified file after activation; the other stays
+# pristine, so the old-generation copy is still its baseline.
+printf 'user edit\n' >"$HOME/.config/policyapp/edited.conf"
+
+POLICIES="$WORKDIR/hm-policies.json"
+cat >"$POLICIES" <<'EOF'
+{
+  ".config/policyapp/keepme.conf": "keep",
+  ".config/policyapp/edited.conf": "keep-if-modified",
+  ".config/policyapp/pristine.conf": "keep-if-modified",
+  ".config/policyapp/inform.conf": "inform"
+}
+EOF
+
+# gen F drops all five files from the config. The policies file rides the
+# environment (the NixOS module passes it the same way).
+run_capture env \
+  HOME="$HOME" \
+  newGenPath="$GEN_F" \
+  oldGenPath="$GEN_E" \
+  NIX_SCOUT_HM_POLICIES_FILE="$POLICIES" \
+  "$ACT"
+if [[ "$CAPTURED_RC" -eq 0 ]]; then
+  pass "activator exit 0 applying policies to vanished files"
+else
+  fail "activator failed on policy run (rc=$CAPTURED_RC err=$(printf %q "$CAPTURED_ERR"))"
+fi
+
+assert_file_absent "$HOME/.config/policyapp/default.conf" \
+  "unlisted (default remove) vanished file deleted"
+assert_file_present "$HOME/.config/policyapp/keepme.conf" \
+  "keep-policy vanished file left in place"
+assert_file_absent "$HOME/.config/policyapp/pristine.conf" \
+  "keep-if-modified vanished file deleted when unmodified from baseline"
+assert_file_present "$HOME/.config/policyapp/edited.conf" \
+  "keep-if-modified vanished file left in place when user-edited"
+assert_file_present "$HOME/.config/policyapp/inform.conf" \
+  "inform-policy vanished file left in place"
+
+for want in \
+  "removed .config/policyapp/default.conf (no longer in the config)" \
+  "removed .config/policyapp/pristine.conf (no longer in the config; unmodified from its baseline)" \
+  "kept .config/policyapp/edited.conf (no longer in the config; differs from its baseline)" \
+  "no longer managed by nix-scout (policy: inform)"; do
+  if [[ "$CAPTURED_OUT$CAPTURED_ERR" == *"$want"* ]]; then
+    pass "policy message: $want"
+  else
+    fail "policy message missing: $want (output: $(printf %q "$CAPTURED_OUT$CAPTURED_ERR"))"
+  fi
+done
+
+# keep-policy files are silent on activation: no would-report noise.
+if [[ "$CAPTURED_OUT$CAPTURED_ERR" == *".config/policyapp/keepme.conf"* ]]; then
+  fail "keep-policy file should be silent on activation, got a message about it"
+else
+  pass "keep-policy file silent on activation"
+fi
+
 finish_suite
