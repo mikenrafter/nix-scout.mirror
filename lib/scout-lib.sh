@@ -381,7 +381,7 @@ sync_lock_from_parent() {
   trap "rm -rf '$scratch'" RETURN
   cp "$module_dir/flake.nix" "$scratch/flake.nix"
   cp "$parent_lock" "$scratch/flake.lock"
-  if ! nix flake metadata --json "$scratch" >/dev/null 2>&1; then
+  if ! nix flake metadata --json "path:$scratch" >/dev/null 2>&1; then
     echo "nix-scout: failed to resolve $module_dir against the host's flake.lock — run \`nix flake metadata $scratch\` to see why" >&2
     return 1
   fi

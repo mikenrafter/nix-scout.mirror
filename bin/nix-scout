@@ -265,7 +265,7 @@ _switch_module() {
     echo "nix-scout: build $mat#scout" >&2
     err_log="$(mktemp)"
     store_path="$(nix build --no-link --print-out-paths --no-write-lock-file \
-      "${nix_extra[@]}" "$mat#scout" 2>"$err_log")" \
+      "${nix_extra[@]}" "path:$mat#scout" 2>"$err_log")" \
       && nix_ok=true || nix_ok=false
     grep -Ev '^(warning: not writing modified lock file|• (Removed|Updated|Added) input|    '\''|  → )' \
       "$err_log" >&2 || true

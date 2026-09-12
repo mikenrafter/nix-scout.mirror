@@ -125,7 +125,7 @@ else
 fi
 
 echo "-- materialized module builds .#scout only (not parent system) --"
-run_capture "$NIX" build --no-link --print-out-paths --no-write-lock-file "$MAT_OUT#scout"
+run_capture "$NIX" build --no-link --print-out-paths --no-write-lock-file "path:$MAT_OUT#scout"
 if [[ "$CAPTURED_RC" -eq 0 ]]; then
   pass "materialized module builds .#scout standalone"
   scout_out="${CAPTURED_OUT%%$'\n'*}"
@@ -165,7 +165,7 @@ cat > "$PROBE_MOD/flake.nix" <<'EOF'
 EOF
 run_capture env NIX_SCOUT_PARENT="$NIX_SCOUT_PARENT" bash "$MAT" "$PROBE_MOD"
 PROBE_MAT="${CAPTURED_OUT%%$'\n'*}"
-run_capture "$NIX" build --no-link --print-out-paths --no-write-lock-file "$PROBE_MAT#scout"
+run_capture "$NIX" build --no-link --print-out-paths --no-write-lock-file "path:$PROBE_MAT#scout"
 if [[ "$CAPTURED_RC" -eq 0 ]]; then
   probe_out="${CAPTURED_OUT%%$'\n'*}"
   mode="$(cat "$probe_out" 2>/dev/null || true)"
